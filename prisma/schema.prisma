@@ -1,0 +1,134 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+
+model User {
+  id           String       @id @default(cuid())
+  name         String?
+  email        String       @unique
+  passwordHash String
+  role               String       @default("user") // "admin" | "user"
+  mustChangePassword Boolean      @default(false)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  // Encrypted API keys (AES-256-GCM)
+  anthropicKeyEnc   String?
+  openaiKeyEnc      String?
+  geminiKeyEnc      String?
+  preferredProvider String       @default("anthropic") // "anthropic" | "openai" | "gemini"
+
+  // Free-text custom instructions injected into AI prompts
+  customInstructions String?
+
+  extractions       Extraction[]
+  referenceExamples ReferenceExample[]
+}
+
+model Extraction {
+  id           String   @id @default(cuid())
+  name         String
+  fileName     String
+  fileSize     Int
+  pageCount    Int?
+  status       String   @default("pending")
+  errorMessage String?
+  rawResponse  String?
+  summary      String?
+  verified     Boolean  @default(false)
+  provider     String   @default("anthropic") // "anthropic" | "openai" | "gemini"
+  verificationDiagnostics String? // JSON: connectivity issues, scope checks, uncertainties, dedup flags
+
+  // PDF viewer & measurement
+  pdfBlobUrl            String?  // Vercel Blob URL for PDF file
+  scalePixelsPerFoot    Float?   // Computed scale ratio (pixels per foot at render resolution)
+  scaleCalibrationJson  String?  // JSON: { page, points, distanceFt, pdfWidth, pdfHeight }
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items        Item[]
+  measurements Measurement[]
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model Item {
+  id              String     @id @default(cuid())
+  name            String
+  description     String?
+  measurementType String
+  system          String
+  quantity        Float      @default(1)
+  unit            String
+  costEach        Float      @default(0)
+  markupPercent   Float      @default(0)
+  priceEach       Float      @default(0)
+  priceTotal      Float      @default(0)
+  confidence      String     @default("medium") // "high", "medium", "low"
+
+  // Audit & traceability fields
+  sourcePages     String?    // JSON array: [1, 3, 7]
+  sourceSheetId   String?    // Sheet ID: "C-4", "C13.01"
+  quantityMethod  String?    // station_math | callout | schedule | count | scale_estimate
+  evidence        String?    // Exact callout text, station range, or table row
+  assumptions     String?    // JSON array: ["assumed DR18 based on size", ...]
+  dedupeKey       String?    // Unique key for cross-chunk deduplication
+  nodeRange       String?    // "SSMH-3 -> CO-1" (from/to structures)
+  stationRange    String?    // "STA 2+45.50 - STA 5+82.30"
+  isDemo          Boolean    @default(false)
+  folderPath      String?    // PlanSwift category: "Water/Linear", "Demolition/Count"
+
+  sortOrder       Int        @default(0)
+  extractionId    String
+  extraction      Extraction @relation(fields: [extractionId], references: [id], onDelete: Cascade)
+  measurements    Measurement[]
+
+  @@index([extractionId])
+  @@index([measurementType])
+  @@index([system])
+  @@index([isDemo])
+  @@index([dedupeKey])
+}
+
+model Measurement {
+  id           String     @id @default(cuid())
+  type         String     // "linear" | "area" | "count"
+  label        String?
+  pointsJson   String     // JSON array of {x, y} in PDF coordinate space
+  page         Int        // PDF page number (1-indexed)
+  valueFt      Float?     // Computed length (FT) or area (SQ FT)
+  valueCount   Int?       // Count value (always 1 per marker)
+  color        String     @default("#FF0000")
+  extractionId String
+  extraction   Extraction @relation(fields: [extractionId], references: [id], onDelete: Cascade)
+  itemId       String?
+  item         Item?      @relation(fields: [itemId], references: [id], onDelete: SetNull)
+  createdAt    DateTime   @default(now())
+
+  @@index([extractionId])
+  @@index([itemId])
+}
+
+model ReferenceExample {
+  id          String   @id @default(cuid())
+  name        String
+  projectType String   @default("mixed")
+  rawText     String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isActive])
+}
