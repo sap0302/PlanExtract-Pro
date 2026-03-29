@@ -57,6 +57,8 @@ function formatVerificationDiagnostics(
   return JSON.stringify(diag);
 }
 
+export const maxDuration = 300; // 5 minutes — Vercel Pro
+
 export async function POST(req: Request) {
   try {
     const session = await auth();
