@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { upload } from "@vercel/blob/client";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -132,22 +131,28 @@ export function PdfUpload() {
     setStatus("Uploading plan...");
 
     try {
-      // Upload PDF to Vercel Blob (or direct to server in local dev)
+      // Step 1: Upload PDF to Vercel Blob via streaming (avoids body size limits)
+      setStatus("Uploading plan to cloud storage...");
       let blobUrl: string | null = null;
-      setStatus("Uploading plan...");
 
       try {
-        const blob = await upload(file.name, file, {
-          access: "public",
-          handleUploadUrl: "/api/upload",
+        const uploadRes = await fetch("/api/upload", {
+          method: "POST",
+          headers: {
+            "x-filename": file.name,
+            "content-type": "application/pdf",
+          },
+          body: file,
         });
-        blobUrl = blob.url;
+        if (uploadRes.ok) {
+          const uploadData = await uploadRes.json();
+          blobUrl = uploadData.url;
+        }
       } catch {
-        // Blob upload failed (likely local dev without BLOB_READ_WRITE_TOKEN)
-        // Fall back to direct file upload
-        console.log("Blob upload unavailable, falling back to direct upload");
+        console.warn("Blob upload unavailable, sending file directly");
       }
 
+      // Step 2: Send extraction request with blob URL or direct file
       const formData = new FormData();
       if (blobUrl) {
         formData.append("blobUrl", blobUrl);

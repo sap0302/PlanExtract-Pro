@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { put } from "@vercel/blob";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import {
@@ -77,7 +78,7 @@ export async function POST(req: Request) {
     const requestedProvider = (formData.get("provider") as string) || "";
     const scale = (formData.get("scale") as string) || "";
 
-    // Support both blob URL (production) and direct file upload (local dev)
+    // Support both blob URL (pre-uploaded) and direct file upload
     let pdfBlobUrl: string | null = null;
     let resolvedFileName: string;
     let resolvedFileSize: number;
@@ -102,6 +103,16 @@ export async function POST(req: Request) {
       }
       resolvedFileName = file.name;
       resolvedFileSize = file.size;
+
+      // Upload to Vercel Blob server-side if available
+      if (process.env.BLOB_READ_WRITE_TOKEN) {
+        try {
+          const blob = await put(file.name, file, { access: "public" });
+          pdfBlobUrl = blob.url;
+        } catch (e) {
+          console.warn("Blob upload failed, PDF won't be viewable later:", e);
+        }
+      }
     } else {
       return NextResponse.json({ error: "No file or blob URL provided" }, { status: 400 });
     }

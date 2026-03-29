@@ -1,0 +1,12 @@
+{
+  "functions": {
+    "src/app/api/upload/route.ts": {
+      "maxDuration": 120,
+      "memory": 1024
+    },
+    "src/app/api/extract/route.ts": {
+      "maxDuration": 300,
+      "memory": 1024
+    }
+  }
+}

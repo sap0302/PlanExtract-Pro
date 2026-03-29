@@ -1,39 +1,31 @@
-import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
+import { put } from "@vercel/blob";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const body = (await request.json()) as HandleUploadBody;
-
   try {
-    const jsonResponse = await handleUpload({
-      body,
-      request,
-      onBeforeGenerateToken: async () => {
-        // Authenticate the upload request
-        const session = await auth();
-        if (!session?.user?.id) {
-          throw new Error("Unauthorized");
-        }
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-        return {
-          allowedContentTypes: ["application/pdf"],
-          maximumSizeInBytes: 150 * 1024 * 1024, // 150MB
-          tokenPayload: JSON.stringify({
-            userId: session.user.id,
-          }),
-        };
-      },
-      onUploadCompleted: async () => {
-        // No-op — extraction is triggered separately
-      },
+    // Get filename from header or default
+    const filename = request.headers.get("x-filename") || "upload.pdf";
+
+    // Stream the request body directly to Vercel Blob (no buffering)
+    const blob = await put(filename, request.body!, {
+      access: "public",
+      contentType: "application/pdf",
     });
 
-    return NextResponse.json(jsonResponse);
+    return NextResponse.json({
+      url: blob.url,
+      fileName: filename,
+    });
   } catch (error) {
     return NextResponse.json(
       { error: (error as Error).message },
-      { status: 400 }
+      { status: 500 }
     );
   }
 }
