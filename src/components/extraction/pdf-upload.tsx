@@ -45,7 +45,7 @@ export function PdfUpload() {
   const [scale, setScale] = useState("");
   const [customScale, setCustomScale] = useState("");
 
-  // Fetch PDF info when file is selected
+  // Get PDF info client-side (avoids Vercel body size limits)
   useEffect(() => {
     if (!file) {
       setPdfInfo(null);
@@ -57,21 +57,15 @@ export function PdfUpload() {
     const fetchInfo = async () => {
       setLoadingInfo(true);
       try {
-        const formData = new FormData();
-        formData.append("file", file);
-
-        const res = await fetch("/api/pdf-info", {
-          method: "POST",
-          body: formData,
-        });
-
-        if (res.ok) {
-          const info = await res.json();
-          setPdfInfo(info);
-        }
+        const { PDFDocument } = await import("pdf-lib");
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+        const pageCount = pdf.getPageCount();
+        const estimatedBase64Size = Math.ceil(file.size * 1.34);
+        const needsSplitting = estimatedBase64Size > 20 * 1024 * 1024;
+        setPdfInfo({ pageCount, fileSize: file.size, needsSplitting });
       } catch {
-        // Silently fail — page count is optional
-        console.warn("Could not fetch PDF info");
+        console.warn("Could not read PDF info");
       } finally {
         setLoadingInfo(false);
       }
