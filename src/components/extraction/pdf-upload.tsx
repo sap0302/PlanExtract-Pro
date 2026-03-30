@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { upload } from "@vercel/blob/client";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -132,19 +131,62 @@ export function PdfUpload() {
     setStatus("Uploading plan...");
 
     try {
-      // Step 1: Upload PDF to Vercel Blob (client-side upload via token)
+      // Step 1: Upload PDF via chunked upload (avoids Vercel 4.5MB body limit)
       setStatus("Uploading plan to cloud storage...");
 
-      const blob = await upload(file.name, file, {
-        access: "public",
-        handleUploadUrl: "/api/upload",
-      });
+      const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB chunks (safe under 4.5MB with base64 overhead)
+      const arrayBuffer = await file.arrayBuffer();
+      const totalBytes = arrayBuffer.byteLength;
+      const totalChunks = Math.ceil(totalBytes / CHUNK_SIZE);
 
-      // Step 2: Send extraction request with blob URL (small payload, no body size issues)
+      // Initialize upload
+      const initRes = await fetch("/api/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "init",
+          fileName: file.name,
+          totalChunks,
+        }),
+      });
+      if (!initRes.ok) throw new Error("Failed to initialize upload");
+      const { uploadId } = await initRes.json();
+
+      // Send chunks
+      let blobUrl: string | null = null;
+      for (let i = 0; i < totalChunks; i++) {
+        setStatus(`Uploading plan... ${Math.round(((i + 1) / totalChunks) * 100)}%`);
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, totalBytes);
+        const chunk = arrayBuffer.slice(start, end);
+        const chunkBase64 = btoa(
+          new Uint8Array(chunk).reduce((s, b) => s + String.fromCharCode(b), "")
+        );
+
+        const chunkRes = await fetch("/api/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "chunk",
+            uploadId,
+            chunkIndex: i,
+            chunkData: chunkBase64,
+          }),
+        });
+        if (!chunkRes.ok) throw new Error(`Failed to upload chunk ${i + 1}`);
+        const chunkResult = await chunkRes.json();
+        if (chunkResult.complete) {
+          blobUrl = chunkResult.url;
+        }
+      }
+
+      if (!blobUrl) throw new Error("Upload completed but no blob URL returned");
+
+      // Step 2: Send extraction request with blob URL
       setStatus("Analyzing plan with AI... This may take 30-60 seconds.");
 
       const formData = new FormData();
-      formData.append("blobUrl", blob.url);
+      formData.append("blobUrl", blobUrl);
       formData.append("fileName", file.name);
       formData.append("fileSize", String(file.size));
       formData.append("name", name || file.name);
