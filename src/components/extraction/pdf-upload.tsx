@@ -187,8 +187,11 @@ export function PdfUpload() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "complete", uploadId, key, parts }),
       });
-      if (!completeRes.ok) throw new Error("Failed to complete upload");
-      const { url: blobUrl } = await completeRes.json();
+      const completeData = await completeRes.json();
+      if (!completeRes.ok) {
+        throw new Error(completeData.error || "Failed to complete upload");
+      }
+      const blobUrl = completeData.url;
 
       // Step 2: Send extraction request with blob URL
       setStatus("Analyzing plan with AI... This may take 30-60 seconds.");
