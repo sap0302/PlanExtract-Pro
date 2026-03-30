@@ -134,26 +134,15 @@ export function PdfUpload() {
       // Step 1: Upload PDF via chunked upload (avoids Vercel 4.5MB body limit)
       setStatus("Uploading plan to cloud storage...");
 
-      const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB chunks (safe under 4.5MB with base64 overhead)
+      const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB chunks (~2.7MB base64, safe under 4.5MB limit)
       const arrayBuffer = await file.arrayBuffer();
       const totalBytes = arrayBuffer.byteLength;
       const totalChunks = Math.ceil(totalBytes / CHUNK_SIZE);
 
-      // Initialize upload
-      const initRes = await fetch("/api/upload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "init",
-          fileName: file.name,
-          totalChunks,
-        }),
-      });
-      if (!initRes.ok) throw new Error("Failed to initialize upload");
-      const { uploadId } = await initRes.json();
-
-      // Send chunks
+      // Send chunks sequentially, each chunk is uploaded to blob as a temp part
       let blobUrl: string | null = null;
+      let parts: string[] = [];
+
       for (let i = 0; i < totalChunks; i++) {
         setStatus(`Uploading plan... ${Math.round(((i + 1) / totalChunks) * 100)}%`);
         const start = i * CHUNK_SIZE;
@@ -167,16 +156,24 @@ export function PdfUpload() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            action: "chunk",
-            uploadId,
-            chunkIndex: i,
+            fileName: file.name,
             chunkData: chunkBase64,
+            chunkIndex: i,
+            totalChunks,
+            previousParts: parts,
           }),
         });
-        if (!chunkRes.ok) throw new Error(`Failed to upload chunk ${i + 1}`);
+
+        if (!chunkRes.ok) {
+          const err = await chunkRes.json().catch(() => ({ error: "Upload failed" }));
+          throw new Error(err.error || `Failed to upload chunk ${i + 1}`);
+        }
+
         const chunkResult = await chunkRes.json();
         if (chunkResult.complete) {
           blobUrl = chunkResult.url;
+        } else {
+          parts = chunkResult.parts;
         }
       }
 

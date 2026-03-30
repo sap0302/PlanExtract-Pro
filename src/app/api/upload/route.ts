@@ -2,8 +2,7 @@ import { put } from "@vercel/blob";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 
-// In-memory store for chunked uploads (keyed by uploadId)
-const uploadChunks = new Map<string, { chunks: Buffer[]; fileName: string; totalChunks: number }>();
+export const maxDuration = 120;
 
 export async function POST(request: Request): Promise<NextResponse> {
   try {
@@ -12,69 +11,58 @@ export async function POST(request: Request): Promise<NextResponse> {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const contentType = request.headers.get("content-type") || "";
+    const body = await request.json();
+    const { fileName, chunkData, chunkIndex, totalChunks, previousParts } = body;
 
-    // JSON request = chunk metadata or init
-    if (contentType.includes("application/json")) {
-      const body = await request.json();
-      const { action, uploadId, fileName, totalChunks, chunkIndex, chunkData } = body;
+    // Decode this chunk
+    const chunkBuffer = Buffer.from(chunkData, "base64");
 
-      if (action === "init") {
-        // Initialize a new chunked upload
-        const id = `${session.user.id}-${Date.now()}`;
-        uploadChunks.set(id, {
-          chunks: new Array(totalChunks).fill(null),
-          fileName,
-          totalChunks,
-        });
+    // Collect all parts
+    const parts: string[] = previousParts || [];
 
-        // Clean up after 5 minutes
-        setTimeout(() => uploadChunks.delete(id), 5 * 60 * 1000);
+    // Upload this chunk as a temporary blob
+    const partBlob = await put(`_parts/${fileName}-part${chunkIndex}`, chunkBuffer, {
+      access: "public",
+      contentType: "application/octet-stream",
+    });
+    parts.push(partBlob.url);
 
-        return NextResponse.json({ uploadId: id });
+    // If this is the last chunk, download all parts, merge, and upload final PDF
+    if (parts.length === totalChunks) {
+      const allBuffers: Buffer[] = [];
+      for (const partUrl of parts) {
+        const res = await fetch(partUrl);
+        allBuffers.push(Buffer.from(await res.arrayBuffer()));
       }
+      const fullBuffer = Buffer.concat(allBuffers);
 
-      if (action === "chunk") {
-        // Receive a chunk
-        const upload = uploadChunks.get(uploadId);
-        if (!upload) {
-          return NextResponse.json({ error: "Upload not found or expired" }, { status: 404 });
-        }
+      // Upload the merged PDF
+      const finalBlob = await put(fileName, fullBuffer, {
+        access: "public",
+        contentType: "application/pdf",
+      });
 
-        upload.chunks[chunkIndex] = Buffer.from(chunkData, "base64");
+      // Clean up temp parts (fire and forget)
+      const { del } = await import("@vercel/blob");
+      del(parts).catch(() => {});
 
-        // Check if all chunks received
-        const receivedCount = upload.chunks.filter(Boolean).length;
-        if (receivedCount === upload.totalChunks) {
-          // All chunks received — reassemble and upload to Vercel Blob
-          const fullBuffer = Buffer.concat(upload.chunks);
-          uploadChunks.delete(uploadId);
-
-          const blob = await put(upload.fileName, fullBuffer, {
-            access: "public",
-            contentType: "application/pdf",
-          });
-
-          return NextResponse.json({
-            complete: true,
-            url: blob.url,
-            fileName: upload.fileName,
-            fileSize: fullBuffer.length,
-          });
-        }
-
-        return NextResponse.json({
-          complete: false,
-          received: receivedCount,
-          total: upload.totalChunks,
-        });
-      }
-
-      return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+      return NextResponse.json({
+        complete: true,
+        url: finalBlob.url,
+        fileName,
+        fileSize: fullBuffer.length,
+      });
     }
 
-    return NextResponse.json({ error: "Invalid content type" }, { status: 400 });
+    // Return the parts list so client sends it back with next chunk
+    return NextResponse.json({
+      complete: false,
+      parts,
+      received: parts.length,
+      total: totalChunks,
+    });
   } catch (error) {
+    console.error("Upload error:", error);
     return NextResponse.json(
       { error: (error as Error).message },
       { status: 500 }
