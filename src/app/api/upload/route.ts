@@ -1,11 +1,7 @@
-import {
-  put,
-  createMultipartUpload,
-  uploadPart,
-  completeMultipartUpload,
-} from "@vercel/blob";
+import { put } from "@vercel/blob";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 
 export const maxDuration = 120;
 
@@ -16,78 +12,83 @@ export async function POST(request: Request): Promise<NextResponse> {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const contentType = request.headers.get("content-type") || "";
+    const body = await request.json();
+    const { action } = body;
 
-    // JSON requests: create and complete multipart
-    if (contentType.includes("application/json")) {
-      const body = await request.json();
-      const { action } = body;
+    // Step 1: Client sends a chunk to be stored in DB
+    if (action === "chunk") {
+      const { uploadId, chunkIndex, totalChunks, fileName, chunkData } = body;
 
-      if (action === "create") {
-        const { fileName } = body;
-        const multipart = await createMultipartUpload(fileName, {
-          access: "private",
-          contentType: "application/pdf",
-        });
-        return NextResponse.json({
-          uploadId: multipart.uploadId,
-          key: multipart.key,
-        });
-      }
+      // Store chunk in a temporary DB table
+      // Using ReferenceExample as scratch storage would be messy,
+      // so we use raw SQL to create/use a temp chunks table
+      await prisma.$executeRawUnsafe(
+        `CREATE TABLE IF NOT EXISTS "UploadChunk" (
+          "uploadId" TEXT NOT NULL,
+          "chunkIndex" INTEGER NOT NULL,
+          "data" TEXT NOT NULL,
+          "fileName" TEXT NOT NULL,
+          "totalChunks" INTEGER NOT NULL,
+          "createdAt" TIMESTAMP DEFAULT NOW(),
+          PRIMARY KEY ("uploadId", "chunkIndex")
+        )`
+      );
 
-      if (action === "complete") {
-        const { uploadId, key, parts } = body;
-        const blob = await completeMultipartUpload(key, parts, {
-          access: "private",
-          uploadId,
-          key,
-        });
-        return NextResponse.json({
-          url: blob.url,
-          pathname: blob.pathname,
-        });
-      }
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO "UploadChunk" ("uploadId", "chunkIndex", "data", "fileName", "totalChunks")
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT ("uploadId", "chunkIndex") DO UPDATE SET "data" = $3`,
+        uploadId, chunkIndex, chunkData, fileName, totalChunks
+      );
 
-      // Simple upload for small files (< 4MB)
-      if (action === "simple") {
-        const { fileName, fileData } = body;
-        const buffer = Buffer.from(fileData, "base64");
-        const blob = await put(fileName, buffer, {
+      // Check if all chunks are received
+      const result = await prisma.$queryRawUnsafe(
+        `SELECT COUNT(*) as count FROM "UploadChunk" WHERE "uploadId" = $1`,
+        uploadId
+      ) as Array<{ count: bigint }>;
+
+      const received = Number(result[0].count);
+
+      if (received === totalChunks) {
+        // All chunks received — fetch, merge, upload to blob
+        const chunks = await prisma.$queryRawUnsafe(
+          `SELECT "data", "chunkIndex" FROM "UploadChunk"
+           WHERE "uploadId" = $1 ORDER BY "chunkIndex" ASC`,
+          uploadId
+        ) as Array<{ data: string; chunkIndex: number }>;
+
+        const buffers = chunks.map((c) => Buffer.from(c.data, "base64"));
+        const fullBuffer = Buffer.concat(buffers);
+
+        // Upload to Vercel Blob
+        const blob = await put(fileName, fullBuffer, {
           access: "private",
           contentType: "application/pdf",
           addRandomSuffix: true,
         });
+
+        // Clean up chunks
+        await prisma.$executeRawUnsafe(
+          `DELETE FROM "UploadChunk" WHERE "uploadId" = $1`,
+          uploadId
+        );
+
         return NextResponse.json({
+          complete: true,
           url: blob.url,
-          pathname: blob.pathname,
+          fileName,
+          fileSize: fullBuffer.length,
         });
       }
 
-      return NextResponse.json({ error: "Invalid action" }, { status: 400 });
-    }
-
-    // Binary requests: upload a multipart part (raw body, no base64 overhead)
-    if (contentType.includes("application/octet-stream")) {
-      const uploadId = request.headers.get("x-upload-id") || "";
-      const key = request.headers.get("x-upload-key") || "";
-      const partNumber = parseInt(request.headers.get("x-part-number") || "1", 10);
-
-      const buffer = Buffer.from(await request.arrayBuffer());
-
-      const part = await uploadPart(key, buffer, {
-        access: "private",
-        uploadId,
-        partNumber,
-        key,
-      });
-
       return NextResponse.json({
-        etag: part.etag,
-        partNumber: part.partNumber,
+        complete: false,
+        received,
+        total: totalChunks,
       });
     }
 
-    return NextResponse.json({ error: "Invalid content type" }, { status: 400 });
+    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   } catch (error) {
     console.error("Upload error:", error);
     return NextResponse.json(

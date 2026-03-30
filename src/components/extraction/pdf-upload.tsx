@@ -134,74 +134,44 @@ export function PdfUpload() {
       // Step 1: Upload PDF via chunked upload (avoids Vercel 4.5MB body limit)
       setStatus("Uploading plan to cloud storage...");
 
+      const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB raw = ~2.7MB base64 = ~2.8MB JSON (under 4.5MB limit)
       const arrayBuffer = await file.arrayBuffer();
       const totalBytes = arrayBuffer.byteLength;
-      let blobUrl: string;
+      const totalChunks = Math.ceil(totalBytes / CHUNK_SIZE);
+      const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-      // Small files (< 3MB): simple base64 upload in one request
-      // Large files: multipart upload with raw binary chunks (min 5MB per part)
-      if (totalBytes < 3 * 1024 * 1024) {
-        setStatus("Uploading plan...");
-        const base64 = btoa(
-          new Uint8Array(arrayBuffer).reduce((s, b) => s + String.fromCharCode(b), "")
+      let blobUrl: string | null = null;
+
+      for (let i = 0; i < totalChunks; i++) {
+        setStatus(`Uploading plan... ${Math.round(((i + 1) / totalChunks) * 100)}%`);
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, totalBytes);
+        const chunk = arrayBuffer.slice(start, end);
+        const chunkBase64 = btoa(
+          new Uint8Array(chunk).reduce((s, b) => s + String.fromCharCode(b), "")
         );
+
         const res = await fetch("/api/upload", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "simple", fileName: file.name, fileData: base64 }),
+          body: JSON.stringify({
+            action: "chunk",
+            uploadId,
+            chunkIndex: i,
+            totalChunks,
+            fileName: file.name,
+            chunkData: chunkBase64,
+          }),
         });
+
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Upload failed");
-        blobUrl = data.url;
-      } else {
-        // Multipart upload — chunks sent as raw binary (no base64 overhead)
-        const CHUNK_SIZE = 5.5 * 1024 * 1024; // 5.5MB (above Vercel Blob 5MB minimum)
-        const totalChunks = Math.ceil(totalBytes / CHUNK_SIZE);
-
-        // Step 1: Create multipart upload
-        const createRes = await fetch("/api/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "create", fileName: file.name }),
-        });
-        if (!createRes.ok) throw new Error("Failed to initialize upload");
-        const { uploadId, key } = await createRes.json();
-
-        // Step 2: Upload each part as raw binary
-        const parts: Array<{ etag: string; partNumber: number }> = [];
-        for (let i = 0; i < totalChunks; i++) {
-          setStatus(`Uploading plan... ${Math.round(((i + 1) / totalChunks) * 100)}%`);
-          const start = i * CHUNK_SIZE;
-          const end = Math.min(start + CHUNK_SIZE, totalBytes);
-          const chunk = arrayBuffer.slice(start, end);
-
-          const partRes = await fetch("/api/upload", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/octet-stream",
-              "x-upload-id": uploadId,
-              "x-upload-key": key,
-              "x-part-number": String(i + 1),
-            },
-            body: chunk,
-          });
-
-          const partData = await partRes.json();
-          if (!partRes.ok) throw new Error(partData.error || `Failed to upload part ${i + 1}`);
-          parts.push({ etag: partData.etag, partNumber: partData.partNumber });
+        if (!res.ok) throw new Error(data.error || `Failed to upload chunk ${i + 1}`);
+        if (data.complete) {
+          blobUrl = data.url;
         }
-
-        // Step 3: Complete multipart upload
-        setStatus("Finalizing upload...");
-        const completeRes = await fetch("/api/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "complete", uploadId, key, parts }),
-        });
-        const completeData = await completeRes.json();
-        if (!completeRes.ok) throw new Error(completeData.error || "Failed to complete upload");
-        blobUrl = completeData.url;
       }
+
+      if (!blobUrl) throw new Error("Upload failed — no blob URL returned");
 
       // Step 2: Send extraction request with blob URL
       setStatus("Analyzing plan with AI... This may take 30-60 seconds.");
