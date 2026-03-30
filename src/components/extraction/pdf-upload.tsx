@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
+import { upload } from "@vercel/blob/client";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -131,36 +132,21 @@ export function PdfUpload() {
     setStatus("Uploading plan...");
 
     try {
-      // Step 1: Upload PDF to Vercel Blob via streaming (avoids body size limits)
+      // Step 1: Upload PDF to Vercel Blob (client-side upload via token)
       setStatus("Uploading plan to cloud storage...");
-      let blobUrl: string | null = null;
 
-      try {
-        const uploadRes = await fetch("/api/upload", {
-          method: "POST",
-          headers: {
-            "x-filename": file.name,
-            "content-type": "application/pdf",
-          },
-          body: file,
-        });
-        if (uploadRes.ok) {
-          const uploadData = await uploadRes.json();
-          blobUrl = uploadData.url;
-        }
-      } catch {
-        console.warn("Blob upload unavailable, sending file directly");
-      }
+      const blob = await upload(file.name, file, {
+        access: "public",
+        handleUploadUrl: "/api/upload",
+      });
 
-      // Step 2: Send extraction request with blob URL or direct file
+      // Step 2: Send extraction request with blob URL (small payload, no body size issues)
+      setStatus("Analyzing plan with AI... This may take 30-60 seconds.");
+
       const formData = new FormData();
-      if (blobUrl) {
-        formData.append("blobUrl", blobUrl);
-        formData.append("fileName", file.name);
-        formData.append("fileSize", String(file.size));
-      } else {
-        formData.append("file", file);
-      }
+      formData.append("blobUrl", blob.url);
+      formData.append("fileName", file.name);
+      formData.append("fileSize", String(file.size));
       formData.append("name", name || file.name);
 
       // Include page ranges if specified
