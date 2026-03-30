@@ -1,4 +1,4 @@
-import { put } from "@vercel/blob";
+import { put, head, del } from "@vercel/blob";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 
@@ -29,11 +29,12 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     // If this is the last chunk, download all parts, merge, and upload final PDF
     if (parts.length === totalChunks) {
-      const { getDownloadUrl } = await import("@vercel/blob");
       const allBuffers: Buffer[] = [];
       for (const partUrl of parts) {
-        const downloadUrl = await getDownloadUrl(partUrl);
-        const res = await fetch(downloadUrl);
+        // Use head() to get authenticated downloadUrl for private blobs
+        const blobMeta = await head(partUrl);
+        const res = await fetch(blobMeta.downloadUrl);
+        if (!res.ok) throw new Error(`Failed to download part: ${res.status}`);
         allBuffers.push(Buffer.from(await res.arrayBuffer()));
       }
       const fullBuffer = Buffer.concat(allBuffers);
@@ -45,7 +46,6 @@ export async function POST(request: Request): Promise<NextResponse> {
       });
 
       // Clean up temp parts (fire and forget)
-      const { del } = await import("@vercel/blob");
       del(parts).catch(() => {});
 
       return NextResponse.json({
