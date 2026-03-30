@@ -22,23 +22,25 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     // Upload this chunk as a temporary blob
     const partBlob = await put(`_parts/${fileName}-part${chunkIndex}`, chunkBuffer, {
-      access: "public",
+      access: "private",
       contentType: "application/octet-stream",
     });
     parts.push(partBlob.url);
 
     // If this is the last chunk, download all parts, merge, and upload final PDF
     if (parts.length === totalChunks) {
+      const { getDownloadUrl } = await import("@vercel/blob");
       const allBuffers: Buffer[] = [];
       for (const partUrl of parts) {
-        const res = await fetch(partUrl);
+        const downloadUrl = await getDownloadUrl(partUrl);
+        const res = await fetch(downloadUrl);
         allBuffers.push(Buffer.from(await res.arrayBuffer()));
       }
       const fullBuffer = Buffer.concat(allBuffers);
 
       // Upload the merged PDF
       const finalBlob = await put(fileName, fullBuffer, {
-        access: "public",
+        access: "private",
         contentType: "application/pdf",
       });
 

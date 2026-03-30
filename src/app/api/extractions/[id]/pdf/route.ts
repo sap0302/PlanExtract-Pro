@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getDownloadUrl } from "@vercel/blob";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -29,6 +30,7 @@ export async function GET(
     );
   }
 
-  // Redirect to the Vercel Blob URL
-  return NextResponse.redirect(extraction.pdfBlobUrl);
+  // Get a temporary download URL for the private blob
+  const downloadUrl = await getDownloadUrl(extraction.pdfBlobUrl);
+  return NextResponse.redirect(downloadUrl);
 }

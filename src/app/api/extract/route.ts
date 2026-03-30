@@ -230,7 +230,9 @@ export async function POST(req: Request) {
       // Convert to buffer — from blob URL (production) or direct file (local dev)
       let rawBuffer: Buffer;
       if (pdfBlobUrl) {
-        const blobResponse = await fetch(pdfBlobUrl);
+        const { getDownloadUrl } = await import("@vercel/blob");
+        const downloadUrl = await getDownloadUrl(pdfBlobUrl);
+        const blobResponse = await fetch(downloadUrl);
         if (!blobResponse.ok) {
           throw new Error("Failed to download PDF from blob storage");
         }
