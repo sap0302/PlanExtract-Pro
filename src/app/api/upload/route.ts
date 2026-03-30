@@ -24,6 +24,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     const partBlob = await put(`_parts/${fileName}-part${chunkIndex}`, chunkBuffer, {
       access: "private",
       contentType: "application/octet-stream",
+      addRandomSuffix: true,
     });
     parts.push(partBlob.url);
 
@@ -43,6 +44,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       const finalBlob = await put(fileName, fullBuffer, {
         access: "private",
         contentType: "application/pdf",
+        addRandomSuffix: true,
       });
 
       // Clean up temp parts (fire and forget)
