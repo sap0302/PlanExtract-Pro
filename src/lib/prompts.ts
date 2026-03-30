@@ -60,6 +60,7 @@ HOW TO MEASURE QUANTITIES (in order of reliability):
    - Pipe length = ending station minus starting station. Example: STA 2+45.50 - STA 0+00 = 245.50 FT.
    - Plan views also show station callouts along pipe alignments — use these the same way.
    - When a pipe run spans multiple segments with different sizes, calculate each segment separately.
+   - ELEVATION ADJUSTMENT: When profile views show elevation data, calculate the TRUE pipe length using both horizontal distance and vertical drop: true_length = sqrt(horizontal² + vertical²). This is especially important for sewer gravity lines, steep service connections, and lines crossing hilly terrain.
 2. EXPLICIT DIMENSION CALLOUTS (most reliable for areas and short runs):
    - Look for dimension text written directly on the plan: "125 LF", "45'-6"", "350 SF", etc.
    - Demolition notes often state specific lengths: "Remove 150 LF of 8" CI water main."
@@ -93,7 +94,9 @@ HOW TO MEASURE QUANTITIES (in order of reliability):
      c) Show your math (e.g., "3.5\" × 40'/\" = 140 FT")
      d) Cross-check: Does this result make physical sense for this type of item? (See quantity ranges below)
      e) If two sheets show the same item at different scales, use the LARGER scale (more detailed) sheet.
-   - CRITICAL: When measuring service lines (1"-2" connections from main to building), measure ONLY the service line itself — NOT the main pipe it connects to. Service lines are SHORT runs from the main to the meter/building.
+   - CRITICAL: When measuring service lines (1"-2" connections from main to building), measure ONLY the service line itself — NOT the main pipe it connects to. Service lines run from the saddle on the main to the meter box at the property.
+   - SERVICE LINE LENGTH: Each service line must be measured INDIVIDUALLY. Count the number of services (one per lot/building), then measure EACH run from the main to the meter/building. SUM all individual service line lengths for the total. For example: 10 service lines averaging 40 FT each = 400 FT total of 2" POLY W. Do NOT just measure one service and multiply — measure each one, as they vary in length.
+   - SERVICE LINES ON PROFILE SHEETS: If service line profiles are shown, use the profile elevation data to calculate true length including vertical drop from main to meter.
 
 QUANTITY REASONABLENESS — expected ranges for common items (sanity-check your estimates):
    - Water service lines (1"-2" POLY/COPPER): 15-150 FT per service (from main to meter). If your estimate exceeds 200 FT for a single service, re-measure — you may be measuring the main instead.
@@ -117,7 +120,13 @@ EXTRACTION RULES:
    e) SERVICE CONNECTIONS: Short lines from main to property, often with meter symbols, saddles, and backflow devices.
    f) HYDRANTS: Distinct symbols typically shown at tees off the main. Count each one.
    If you see pipe lines on a drawing, you MUST trace them, identify their size/material, measure their length, and count all fittings along the run. Do NOT skip a plan view just because labels are hard to read — use surrounding context (pipe schedules, notes, legends, nearby labels) to identify materials and sizes.
-- PROFILE VIEWS: These are your BEST source for pipe lengths. Read station markers along the profile and subtract to get pipe run lengths. Also verify pipe sizes, materials, and slopes from profile views.
+- PROFILE VIEWS: These are your BEST source for pipe lengths AND true pipe lengths accounting for elevation.
+   a) Read station markers along the profile and subtract to get horizontal pipe run lengths.
+   b) CHECK ELEVATION CHANGES: Profile views show the pipe's vertical alignment. When a pipe drops or rises significantly, the TRUE installed length is longer than the horizontal distance.
+   c) TRUE LENGTH CALCULATION: If a profile shows a pipe running from STA 0+00 (elev 850) to STA 2+00 (elev 840), the horizontal distance is 200 FT and the vertical drop is 10 FT. True length = sqrt(200² + 10²) = 200.25 FT. For gentle slopes (<5%), the difference is negligible. For steep slopes (>10%), it matters.
+   d) SERVICE LINES: Service lines from mains to meters often have significant vertical drops (5-15 FT over short horizontal runs). A 2" POLY service that is 50 FT horizontally but drops 10 FT vertically is actually sqrt(50² + 10²) = 51 FT of pipe. This adds up across many services.
+   e) SEWER GRAVITY LINES: Sewer lines always slope (typically 0.5%-2% grade). Read the invert elevations at each manhole from the profile to calculate the slope and true length.
+   f) When profile data is available, ALWAYS use the true length (accounting for slope) rather than the plan-view horizontal distance. Note in the evidence field when elevation was used (e.g., "Profile: STA 0+00 to 2+00 = 200 FT horiz, drop 10 FT, true length 200.25 FT").
 - UTILITY PLAN SHEETS vs DETAIL SHEETS: Utility plan/profile sheets (C1-C10 typically) contain the project-specific layout and are WHERE MOST ITEMS COME FROM. Detail sheets (C13+) show HOW to build standard components. If your extraction contains items ONLY from detail sheets and NOTHING from plan/profile sheets, you have made a critical error — go back and re-examine the plan view pages.
 - When in doubt about whether a page contains extractable data, EXTRACT rather than skip. It is better to include items that can be reviewed than to miss real items by being too cautious.
 - If a quantity is difficult to determine precisely, provide your best estimate and note the uncertainty in the description. Do NOT omit the item entirely.

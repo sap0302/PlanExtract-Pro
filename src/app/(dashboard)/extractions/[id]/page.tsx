@@ -30,7 +30,7 @@ export default async function ExtractionDetailPage({
 
   const extraction = await prisma.extraction.findUnique({
     where: { id },
-    omit: { rawResponse: true },
+    omit: { pdfData: true },
     include: {
       items: { orderBy: { sortOrder: "asc" } },
     },

@@ -57,8 +57,6 @@ function formatVerificationDiagnostics(
   return JSON.stringify(diag);
 }
 
-export const maxDuration = 300; // 5 minutes — Vercel Pro
-
 export async function POST(req: Request) {
   try {
     const session = await auth();
@@ -67,43 +65,30 @@ export async function POST(req: Request) {
     }
 
     const formData = await req.formData();
-    const blobUrl = formData.get("blobUrl") as string | null;
     const file = formData.get("file") as File | null;
     const name = (formData.get("name") as string) || "Untitled Extraction";
-    const fileName = (formData.get("fileName") as string) || "upload.pdf";
-    const fileSizeStr = formData.get("fileSize") as string | null;
     const pageRangesStr = (formData.get("pageRanges") as string) || "";
     const enableVerification = formData.get("enableVerification") === "true";
     const requestedProvider = (formData.get("provider") as string) || "";
     const scale = (formData.get("scale") as string) || "";
 
-    // Support both blob URL (pre-uploaded) and direct file upload
-    let pdfBlobUrl: string | null = null;
-    let resolvedFileName: string;
-    let resolvedFileSize: number;
+    if (!file) {
+      return NextResponse.json({ error: "No file provided" }, { status: 400 });
+    }
 
-    if (blobUrl) {
-      pdfBlobUrl = blobUrl;
-      resolvedFileName = fileName;
-      resolvedFileSize = fileSizeStr ? parseInt(fileSizeStr, 10) : 0;
-    } else if (file) {
-      if (file.type !== "application/pdf") {
-        return NextResponse.json(
-          { error: "Only PDF files are accepted" },
-          { status: 400 }
-        );
-      }
-      const maxSize = 150 * 1024 * 1024;
-      if (file.size > maxSize) {
-        return NextResponse.json(
-          { error: "File size exceeds 150MB limit" },
-          { status: 400 }
-        );
-      }
-      resolvedFileName = file.name;
-      resolvedFileSize = file.size;
-    } else {
-      return NextResponse.json({ error: "No file or blob URL provided" }, { status: 400 });
+    if (file.type !== "application/pdf") {
+      return NextResponse.json(
+        { error: "Only PDF files are accepted" },
+        { status: 400 }
+      );
+    }
+
+    const maxSize = 150 * 1024 * 1024; // 150MB
+    if (file.size > maxSize) {
+      return NextResponse.json(
+        { error: "File size exceeds 150MB limit" },
+        { status: 400 }
+      );
     }
 
     // Load user settings (keys + preferred provider)
@@ -203,8 +188,8 @@ export async function POST(req: Request) {
     const extraction = await prisma.extraction.create({
       data: {
         name,
-        fileName: resolvedFileName,
-        fileSize: resolvedFileSize,
+        fileName: file.name,
+        fileSize: file.size,
         status: "processing",
         provider: isConsensusMode
           ? `consensus(${consensusProviders.map((p) => p.provider).join("+")})`
@@ -227,19 +212,9 @@ export async function POST(req: Request) {
         );
       }
 
-      // Convert to buffer — from blob URL (production) or direct file (local dev)
-      let rawBuffer: Buffer;
-      if (pdfBlobUrl) {
-        const { head } = await import("@vercel/blob");
-        const blobMeta = await head(pdfBlobUrl);
-        const blobResponse = await fetch(blobMeta.downloadUrl);
-        if (!blobResponse.ok) {
-          throw new Error("Failed to download PDF from blob storage");
-        }
-        rawBuffer = Buffer.from(await blobResponse.arrayBuffer());
-      } else {
-        rawBuffer = Buffer.from(await file!.arrayBuffer());
-      }
+      // Convert to buffer
+      const arrayBuffer = await file.arrayBuffer();
+      const rawBuffer = Buffer.from(arrayBuffer);
 
       // If user specified page ranges, extract only those pages
       let processBuffer: Uint8Array;
@@ -455,8 +430,8 @@ export async function POST(req: Request) {
 
       if (sanitizedItems.length === 0) {
         console.warn(
-          `[extract] ZERO items extracted from "${name}" (${resolvedFileName}, ` +
-            `${(resolvedFileSize / 1024 / 1024).toFixed(1)}MB). ` +
+          `[extract] ZERO items extracted from "${name}" (${file.name}, ` +
+            `${(file.size / 1024 / 1024).toFixed(1)}MB). ` +
             `Provider: ${selectedProvider}. ` +
             `The PDF may not contain civil plan sheets, or civil content was misidentified.`
         );
@@ -690,7 +665,7 @@ export async function POST(req: Request) {
             rawResponse: JSON.stringify(result),
             verified: verificationApplied,
             verificationDiagnostics: verificationDiagnosticsJson,
-            pdfBlobUrl: pdfBlobUrl,
+            pdfData: Buffer.from(rawBuffer),
           },
         });
       });

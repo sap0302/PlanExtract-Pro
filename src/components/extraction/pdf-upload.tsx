@@ -44,7 +44,7 @@ export function PdfUpload() {
   const [scale, setScale] = useState("");
   const [customScale, setCustomScale] = useState("");
 
-  // Get PDF info client-side (avoids Vercel body size limits)
+  // Fetch PDF info when file is selected
   useEffect(() => {
     if (!file) {
       setPdfInfo(null);
@@ -56,15 +56,21 @@ export function PdfUpload() {
     const fetchInfo = async () => {
       setLoadingInfo(true);
       try {
-        const { PDFDocument } = await import("pdf-lib");
-        const arrayBuffer = await file.arrayBuffer();
-        const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
-        const pageCount = pdf.getPageCount();
-        const estimatedBase64Size = Math.ceil(file.size * 1.34);
-        const needsSplitting = estimatedBase64Size > 20 * 1024 * 1024;
-        setPdfInfo({ pageCount, fileSize: file.size, needsSplitting });
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const res = await fetch("/api/pdf-info", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (res.ok) {
+          const info = await res.json();
+          setPdfInfo(info);
+        }
       } catch {
-        console.warn("Could not read PDF info");
+        // Silently fail — page count is optional
+        console.warn("Could not fetch PDF info");
       } finally {
         setLoadingInfo(false);
       }
@@ -131,55 +137,8 @@ export function PdfUpload() {
     setStatus("Uploading plan...");
 
     try {
-      // Step 1: Upload PDF via chunked upload (avoids Vercel 4.5MB body limit)
-      setStatus("Uploading plan to cloud storage...");
-
-      const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB raw = ~2.7MB base64 = ~2.8MB JSON (under 4.5MB limit)
-      const arrayBuffer = await file.arrayBuffer();
-      const totalBytes = arrayBuffer.byteLength;
-      const totalChunks = Math.ceil(totalBytes / CHUNK_SIZE);
-      const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-      let blobUrl: string | null = null;
-
-      for (let i = 0; i < totalChunks; i++) {
-        setStatus(`Uploading plan... ${Math.round(((i + 1) / totalChunks) * 100)}%`);
-        const start = i * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, totalBytes);
-        const chunk = arrayBuffer.slice(start, end);
-        const chunkBase64 = btoa(
-          new Uint8Array(chunk).reduce((s, b) => s + String.fromCharCode(b), "")
-        );
-
-        const res = await fetch("/api/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "chunk",
-            uploadId,
-            chunkIndex: i,
-            totalChunks,
-            fileName: file.name,
-            chunkData: chunkBase64,
-          }),
-        });
-
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `Failed to upload chunk ${i + 1}`);
-        if (data.complete) {
-          blobUrl = data.url;
-        }
-      }
-
-      if (!blobUrl) throw new Error("Upload failed — no blob URL returned");
-
-      // Step 2: Send extraction request with blob URL
-      setStatus("Analyzing plan with AI... This may take 30-60 seconds.");
-
       const formData = new FormData();
-      formData.append("blobUrl", blobUrl);
-      formData.append("fileName", file.name);
-      formData.append("fileSize", String(file.size));
+      formData.append("file", file);
       formData.append("name", name || file.name);
 
       // Include page ranges if specified

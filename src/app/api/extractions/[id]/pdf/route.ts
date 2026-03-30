@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { head } from "@vercel/blob";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -16,21 +15,25 @@ export async function GET(
 
   const extraction = await prisma.extraction.findUnique({
     where: { id },
-    select: { pdfBlobUrl: true, userId: true, fileName: true },
+    select: { pdfData: true, userId: true, fileName: true },
   });
 
   if (!extraction || extraction.userId !== session.user.id) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  if (!extraction.pdfBlobUrl) {
+  if (!extraction.pdfData) {
     return NextResponse.json(
       { error: "PDF not stored for this extraction" },
       { status: 404 }
     );
   }
 
-  // Get authenticated download URL for private blob
-  const blobMeta = await head(extraction.pdfBlobUrl);
-  return NextResponse.redirect(blobMeta.downloadUrl);
+  return new NextResponse(extraction.pdfData, {
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="${extraction.fileName}"`,
+      "Cache-Control": "private, max-age=3600",
+    },
+  });
 }

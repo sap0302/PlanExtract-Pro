@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -46,7 +46,7 @@ model Extraction {
   verificationDiagnostics String? // JSON: connectivity issues, scope checks, uncertainties, dedup flags
 
   // PDF viewer & measurement
-  pdfBlobUrl            String?  // Vercel Blob URL for PDF file
+  pdfData               Bytes?   // Raw PDF binary for interactive viewer
   scalePixelsPerFoot    Float?   // Computed scale ratio (pixels per foot at render resolution)
   scaleCalibrationJson  String?  // JSON: { page, points, distanceFt, pdfWidth, pdfHeight }
 

@@ -11,7 +11,7 @@ export async function GET() {
   const extractions = await prisma.extraction.findMany({
     where: { userId: session.user.id },
     orderBy: { createdAt: "desc" },
-    omit: { rawResponse: true },
+    omit: { pdfData: true, rawResponse: true },
     include: {
       _count: {
         select: {

@@ -20,7 +20,7 @@ export default async function DashboardPage() {
     where: { userId: session.user.id },
     orderBy: { createdAt: "desc" },
     take: 5,
-    omit: { rawResponse: true },
+    omit: { pdfData: true, rawResponse: true },
     include: {
       _count: {
         select: {

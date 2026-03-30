@@ -1,7 +1,7 @@
 import type { Extraction, Item } from "@prisma/client";
 
-type ExtractionWithItems = Omit<Extraction, "rawResponse"> & {
-  rawResponse?: string | null;
+type ExtractionWithItems = Omit<Extraction, "pdfData"> & {
+  pdfData?: Buffer | null;
   items: Item[];
 };
 

@@ -14,7 +14,7 @@ export async function POST(req: Request) {
 
     const extraction = await prisma.extraction.findUnique({
       where: { id: extractionId },
-      omit: { rawResponse: true },
+      omit: { pdfData: true },
       include: {
         items: { orderBy: { sortOrder: "asc" } },
       },
