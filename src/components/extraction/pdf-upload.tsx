@@ -139,10 +139,17 @@ export function PdfUpload() {
       const totalBytes = arrayBuffer.byteLength;
       const totalChunks = Math.ceil(totalBytes / CHUNK_SIZE);
 
-      // Send chunks sequentially, each chunk is uploaded to blob as a temp part
-      let blobUrl: string | null = null;
-      let parts: string[] = [];
+      // Step 1: Create multipart upload
+      const createRes = await fetch("/api/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "create", fileName: file.name }),
+      });
+      if (!createRes.ok) throw new Error("Failed to initialize upload");
+      const { uploadId, key } = await createRes.json();
 
+      // Step 2: Upload each part
+      const parts: Array<{ etag: string; partNumber: number }> = [];
       for (let i = 0; i < totalChunks; i++) {
         setStatus(`Uploading plan... ${Math.round(((i + 1) / totalChunks) * 100)}%`);
         const start = i * CHUNK_SIZE;
@@ -152,32 +159,36 @@ export function PdfUpload() {
           new Uint8Array(chunk).reduce((s, b) => s + String.fromCharCode(b), "")
         );
 
-        const chunkRes = await fetch("/api/upload", {
+        const partRes = await fetch("/api/upload", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            fileName: file.name,
+            action: "upload-part",
+            uploadId,
+            key,
+            partNumber: i + 1,
             chunkData: chunkBase64,
-            chunkIndex: i,
-            totalChunks,
-            previousParts: parts,
           }),
         });
 
-        if (!chunkRes.ok) {
-          const err = await chunkRes.json().catch(() => ({ error: "Upload failed" }));
-          throw new Error(err.error || `Failed to upload chunk ${i + 1}`);
+        if (!partRes.ok) {
+          const err = await partRes.json().catch(() => ({ error: "Upload failed" }));
+          throw new Error(err.error || `Failed to upload part ${i + 1}`);
         }
 
-        const chunkResult = await chunkRes.json();
-        if (chunkResult.complete) {
-          blobUrl = chunkResult.url;
-        } else {
-          parts = chunkResult.parts;
-        }
+        const partResult = await partRes.json();
+        parts.push({ etag: partResult.etag, partNumber: partResult.partNumber });
       }
 
-      if (!blobUrl) throw new Error("Upload completed but no blob URL returned");
+      // Step 3: Complete multipart upload
+      setStatus("Finalizing upload...");
+      const completeRes = await fetch("/api/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "complete", uploadId, key, parts }),
+      });
+      if (!completeRes.ok) throw new Error("Failed to complete upload");
+      const { url: blobUrl } = await completeRes.json();
 
       // Step 2: Send extraction request with blob URL
       setStatus("Analyzing plan with AI... This may take 30-60 seconds.");

@@ -1,4 +1,8 @@
-import { put, head, del } from "@vercel/blob";
+import {
+  createMultipartUpload,
+  uploadPart,
+  completeMultipartUpload,
+} from "@vercel/blob";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 
@@ -12,59 +16,57 @@ export async function POST(request: Request): Promise<NextResponse> {
     }
 
     const body = await request.json();
-    const { fileName, chunkData, chunkIndex, totalChunks, previousParts } = body;
+    const { action } = body;
 
-    // Decode this chunk
-    const chunkBuffer = Buffer.from(chunkData, "base64");
-
-    // Collect all parts
-    const parts: string[] = previousParts || [];
-
-    // Upload this chunk as a temporary blob
-    const partBlob = await put(`_parts/${fileName}-part${chunkIndex}`, chunkBuffer, {
-      access: "private",
-      contentType: "application/octet-stream",
-      addRandomSuffix: true,
-    });
-    parts.push(partBlob.url);
-
-    // If this is the last chunk, download all parts, merge, and upload final PDF
-    if (parts.length === totalChunks) {
-      const allBuffers: Buffer[] = [];
-      for (const partUrl of parts) {
-        // Use head() to get authenticated downloadUrl for private blobs
-        const blobMeta = await head(partUrl);
-        const res = await fetch(blobMeta.downloadUrl);
-        if (!res.ok) throw new Error(`Failed to download part: ${res.status}`);
-        allBuffers.push(Buffer.from(await res.arrayBuffer()));
-      }
-      const fullBuffer = Buffer.concat(allBuffers);
-
-      // Upload the merged PDF
-      const finalBlob = await put(fileName, fullBuffer, {
+    if (action === "create") {
+      // Step 1: Initialize multipart upload
+      const { fileName } = body;
+      const multipart = await createMultipartUpload(fileName, {
         access: "private",
         contentType: "application/pdf",
-        addRandomSuffix: true,
       });
 
-      // Clean up temp parts (fire and forget)
-      del(parts).catch(() => {});
-
       return NextResponse.json({
-        complete: true,
-        url: finalBlob.url,
-        fileName,
-        fileSize: fullBuffer.length,
+        uploadId: multipart.uploadId,
+        key: multipart.key,
       });
     }
 
-    // Return the parts list so client sends it back with next chunk
-    return NextResponse.json({
-      complete: false,
-      parts,
-      received: parts.length,
-      total: totalChunks,
-    });
+    if (action === "upload-part") {
+      // Step 2: Upload a single part
+      const { uploadId, key, partNumber, chunkData } = body;
+      const chunkBuffer = Buffer.from(chunkData, "base64");
+
+      const part = await uploadPart(key, chunkBuffer, {
+        access: "private",
+        uploadId,
+        partNumber,
+        key,
+      });
+
+      return NextResponse.json({
+        etag: part.etag,
+        partNumber: part.partNumber,
+      });
+    }
+
+    if (action === "complete") {
+      // Step 3: Complete the multipart upload
+      const { uploadId, key, parts } = body;
+
+      const blob = await completeMultipartUpload(key, parts, {
+        access: "private",
+        uploadId,
+        key,
+      });
+
+      return NextResponse.json({
+        url: blob.url,
+        pathname: blob.pathname,
+      });
+    }
+
+    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   } catch (error) {
     console.error("Upload error:", error);
     return NextResponse.json(
