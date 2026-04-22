@@ -9,6 +9,8 @@ interface MeasurementToolbarProps {
   onToolChange: (tool: ToolMode) => void;
   isCalibrated: boolean;
   scaleDescription?: string;
+  onAutoScale?: () => void;
+  autoScaleLoading?: boolean;
 }
 
 // SVG icons for each tool
@@ -126,6 +128,8 @@ export function MeasurementToolbar({
   onToolChange,
   isCalibrated,
   scaleDescription,
+  onAutoScale,
+  autoScaleLoading,
 }: MeasurementToolbarProps) {
   return (
     <div className="flex flex-col gap-1 p-2 border-r bg-muted/30 shrink-0 w-16">
@@ -149,6 +153,32 @@ export function MeasurementToolbar({
           </button>
         );
       })}
+
+      {/* Auto-Scale button — only visible when not calibrated */}
+      {!isCalibrated && onAutoScale && (
+        <button
+          className={`flex flex-col items-center gap-0.5 px-1 py-1.5 rounded text-xs transition-colors
+            ${autoScaleLoading ? "opacity-60 pointer-events-none" : "cursor-pointer hover:bg-blue-100 text-blue-600 hover:text-blue-800"}
+          `}
+          onClick={onAutoScale}
+          disabled={autoScaleLoading}
+          title="AI auto-detect scale bar"
+        >
+          {autoScaleLoading ? (
+            <div className="h-[18px] w-[18px] animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+          ) : (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2a4 4 0 0 1 4 4c0 1.95-2 4-4 7-2-3-4-5.05-4-7a4 4 0 0 1 4-4z" />
+              <circle cx="12" cy="6" r="1" fill="currentColor" />
+              <path d="M3 20h18" />
+              <path d="M3 17v3" />
+              <path d="M21 17v3" />
+              <path d="M12 17v3" />
+            </svg>
+          )}
+          <span className="leading-none font-medium">Auto</span>
+        </button>
+      )}
 
       {/* Scale indicator */}
       <div className="mt-auto pt-2 border-t text-center">

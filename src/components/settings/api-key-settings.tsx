@@ -27,8 +27,30 @@ interface KeyStatus {
   hasOpenaiKey: boolean;
   hasGeminiKey: boolean;
   preferredProvider: string;
+  geminiModel: string;
+  claudeModel: string;
+  openaiModel: string;
   customInstructions: string;
 }
+
+const MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
+  anthropic: [
+    { value: "_default", label: "Default (Sonnet)" },
+    { value: "claude-sonnet-4-6", label: "Claude Sonnet 4" },
+    { value: "claude-opus-4-6", label: "Claude Opus 4" },
+  ],
+  openai: [
+    { value: "_default", label: "Default (GPT-5.4)" },
+    { value: "gpt-5.4", label: "GPT-5.4" },
+    { value: "gpt-5.2", label: "GPT-5.2" },
+    { value: "gpt-4o", label: "GPT-4o" },
+  ],
+  gemini: [
+    { value: "_default", label: "Default (2.5 Flash)" },
+    { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+    { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  ],
+};
 
 const PROVIDERS = [
   {
@@ -36,6 +58,7 @@ const PROVIDERS = [
     label: "Anthropic (Claude)",
     keyField: "anthropicKey" as const,
     hasField: "hasAnthropicKey" as const,
+    modelField: "claudeModel" as const,
     placeholder: "sk-ant-api03-...",
   },
   {
@@ -43,6 +66,7 @@ const PROVIDERS = [
     label: "OpenAI (GPT-4o)",
     keyField: "openaiKey" as const,
     hasField: "hasOpenaiKey" as const,
+    modelField: "openaiModel" as const,
     placeholder: "sk-...",
   },
   {
@@ -50,6 +74,7 @@ const PROVIDERS = [
     label: "Google (Gemini)",
     keyField: "geminiKey" as const,
     hasField: "hasGeminiKey" as const,
+    modelField: "geminiModel" as const,
     placeholder: "AIza...",
   },
 ];
@@ -64,6 +89,11 @@ export function ApiKeySettings() {
     geminiKey: "",
   });
   const [preferredProvider, setPreferredProvider] = useState("anthropic");
+  const [models, setModels] = useState({
+    geminiModel: "_default",
+    claudeModel: "_default",
+    openaiModel: "_default",
+  });
   const [customInstructions, setCustomInstructions] = useState("");
 
   // Track which fields the user has actually edited
@@ -80,6 +110,11 @@ export function ApiKeySettings() {
       const data: KeyStatus = await res.json();
       setStatus(data);
       setPreferredProvider(data.preferredProvider);
+      setModels({
+        geminiModel: data.geminiModel || "_default",
+        claudeModel: data.claudeModel || "_default",
+        openaiModel: data.openaiModel || "_default",
+      });
       setCustomInstructions(data.customInstructions || "");
     } catch (error) {
       toast.error("Failed to load settings");
@@ -105,6 +140,9 @@ export function ApiKeySettings() {
       // Build payload with only changed fields
       const payload: Record<string, string | null> = {
         preferredProvider,
+        geminiModel: models.geminiModel === "_default" ? null : models.geminiModel,
+        claudeModel: models.claudeModel === "_default" ? null : models.claudeModel,
+        openaiModel: models.openaiModel === "_default" ? null : models.openaiModel,
         customInstructions: customInstructions.trim() || null,
       };
 
@@ -129,6 +167,11 @@ export function ApiKeySettings() {
       const data: KeyStatus = await res.json();
       setStatus(data);
       setPreferredProvider(data.preferredProvider);
+      setModels({
+        geminiModel: data.geminiModel || "_default",
+        claudeModel: data.claudeModel || "_default",
+        openaiModel: data.openaiModel || "_default",
+      });
       setCustomInstructions(data.customInstructions || "");
       setKeys({ anthropicKey: "", openaiKey: "", geminiKey: "" });
       setDirtyFields(new Set());
@@ -217,6 +260,28 @@ export function ApiKeySettings() {
                       Clear
                     </Button>
                   )}
+                </div>
+                {/* Model selection */}
+                <div className="flex items-center gap-2 mt-1">
+                  <Label className="text-xs text-muted-foreground shrink-0">Model:</Label>
+                  <Select
+                    value={models[provider.modelField]}
+                    onValueChange={(val) =>
+                      setModels((prev) => ({ ...prev, [provider.modelField]: val }))
+                    }
+                    disabled={saving}
+                  >
+                    <SelectTrigger className="h-8 text-xs w-48">
+                      <SelectValue placeholder="Default" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {MODEL_OPTIONS[provider.id].map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             );

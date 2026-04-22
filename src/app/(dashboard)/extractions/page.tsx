@@ -75,6 +75,13 @@ export default async function ExtractionsPage() {
                     <div className="flex items-center gap-4">
                       <div className="hidden text-right text-sm text-muted-foreground sm:block">
                         <span>{totalItems} items</span>
+                        {extraction.durationMs != null && (
+                          <span className="ml-2 text-xs">
+                            ({extraction.durationMs >= 60000
+                              ? `${Math.floor(extraction.durationMs / 60000)}m ${Math.round((extraction.durationMs % 60000) / 1000)}s`
+                              : `${(extraction.durationMs / 1000).toFixed(1)}s`})
+                          </span>
+                        )}
                       </div>
                       <Badge
                         variant={

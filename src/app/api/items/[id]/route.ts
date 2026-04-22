@@ -3,12 +3,51 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 
+export async function GET(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { id } = await params;
+
+    const item = await prisma.item.findUnique({
+      where: { id },
+      include: {
+        extraction: {
+          select: { userId: true },
+        },
+      },
+    });
+
+    if (!item) {
+      return NextResponse.json({ error: "Item not found" }, { status: 404 });
+    }
+
+    if (item.extraction.userId !== session.user.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+    }
+
+    return NextResponse.json(item);
+  } catch (error) {
+    console.error("Item GET error:", error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Something went wrong" },
+      { status: 500 }
+    );
+  }
+}
+
 const updateItemSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   description: z.string().max(500).nullable().optional(),
   measurementType: z.enum(["area", "count", "linear"]).optional(),
   system: z.enum(["water", "storm_drain", "wastewater", "other"]).optional(),
-  quantity: z.number().min(0).optional(),
+  quantity: z.number().min(0).max(999999).optional(),
   unit: z.enum(["SQ FT", "EA", "FT"]).optional(),
   confidence: z.enum(["high", "medium", "low"]).optional(),
   costEach: z.number().min(0).optional(),
@@ -68,9 +107,95 @@ export async function PATCH(
       );
     }
 
-    const updated = await prisma.item.update({
-      where: { id },
-      data: parsed.data,
+    // ── Learning system: capture corrections before overwriting ──
+    let corrections: Array<{
+      correctionType: string;
+      fieldName: string;
+      originalValue: string | null;
+      correctedValue: string | null;
+    }> = [];
+
+    // Special case: user-added item getting its first real name
+    // This means "AI missed this item entirely" — the most valuable signal
+    if (
+      item.originalAiQuantity == null &&
+      item.name === "New Item" &&
+      parsed.data.name &&
+      parsed.data.name !== "New Item"
+    ) {
+      corrections = [
+        {
+          correctionType: "added",
+          fieldName: "item",
+          originalValue: null,
+          correctedValue: `${parsed.data.name} (qty: ${parsed.data.quantity ?? item.quantity})`,
+        },
+      ];
+    } else {
+      // Track extraction-accuracy fields only (not pricing)
+      const trackedFields = ["quantity", "name", "system", "measurementType", "confidence"] as const;
+      for (const field of trackedFields) {
+        if (parsed.data[field] !== undefined) {
+          const oldVal = String(item[field] ?? "");
+          const newVal = String(parsed.data[field] ?? "");
+          if (oldVal !== newVal) {
+            corrections.push({
+              correctionType: field === "quantity" ? "quantity" : "name",
+              fieldName: field,
+              originalValue: oldVal,
+              correctedValue: newVal,
+            });
+          }
+        }
+      }
+    }
+
+    // Snapshot original AI values on first edit (if not already set)
+    const snapshotData: Record<string, unknown> = { ...parsed.data };
+    if (item.originalAiQuantity == null && parsed.data.quantity !== undefined) {
+      snapshotData.originalAiQuantity = item.quantity;
+    }
+    if (item.originalAiName == null && parsed.data.name !== undefined) {
+      snapshotData.originalAiName = item.name;
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const result = await tx.item.update({
+        where: { id },
+        data: snapshotData,
+      });
+
+      // Save correction records
+      if (corrections.length > 0) {
+        await tx.correction.createMany({
+          data: corrections.map((c) => ({
+            itemId: id,
+            extractionId: item.extractionId,
+            userId: session.user.id,
+            correctionType: c.correctionType,
+            fieldName: c.fieldName,
+            originalValue: c.originalValue,
+            correctedValue: c.correctedValue,
+            itemName: item.name,
+            itemSystem: item.system,
+            measurementType: item.measurementType,
+            quantityMethod: item.quantityMethod,
+          })),
+        });
+
+        // Increment extraction correction count
+        await tx.extraction.update({
+          where: { id: item.extractionId },
+          data: { correctionCount: { increment: corrections.length } },
+        });
+
+        console.log(
+          `[learning] ${corrections.length} correction(s) on "${item.name}": ` +
+            corrections.map((c) => `${c.fieldName} ${c.originalValue} → ${c.correctedValue}`).join(", ")
+        );
+      }
+
+      return result;
     });
 
     return NextResponse.json(updated);
@@ -84,7 +209,7 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -113,7 +238,52 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 
-    await prisma.item.delete({ where: { id } });
+    // ── Learning system: record deletion as correction ──
+    // Parse optional reason from request body
+    const body = await req.json().catch(() => ({}));
+    const reason = (body as Record<string, unknown>).reason as string | undefined;
+
+    // Only track AI-extracted items (those with originalAiQuantity set)
+    if (item.originalAiQuantity != null) {
+      // Map reason to correction type:
+      // "not_on_plans" → AI hallucinated (strong learning signal)
+      // "not_in_scope" → AI was right but item not needed (no negative signal)
+      // undefined → legacy/ambiguous
+      const correctionType =
+        reason === "not_on_plans"
+          ? "deleted_hallucinated"
+          : reason === "not_in_scope"
+            ? "deleted_out_of_scope"
+            : "deleted";
+
+      await prisma.$transaction(async (tx) => {
+        await tx.correction.create({
+          data: {
+            itemId: id,
+            extractionId: item.extractionId,
+            userId: session.user.id,
+            correctionType,
+            fieldName: "item",
+            originalValue: `${item.name} (qty: ${item.quantity})`,
+            correctedValue: reason || null,
+            itemName: item.name,
+            itemSystem: item.system,
+            measurementType: item.measurementType,
+            quantityMethod: item.quantityMethod,
+          },
+        });
+        await tx.extraction.update({
+          where: { id: item.extractionId },
+          data: { correctionCount: { increment: 1 } },
+        });
+        await tx.item.delete({ where: { id } });
+      });
+      console.log(
+        `[learning] Deleted AI item: "${item.name}" (reason: ${correctionType})`
+      );
+    } else {
+      await prisma.item.delete({ where: { id } });
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

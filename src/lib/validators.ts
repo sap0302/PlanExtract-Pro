@@ -31,6 +31,10 @@ export const apiKeySettingsSchema = z.object({
   openaiKey: z.string().nullable().optional(),
   geminiKey: z.string().nullable().optional(),
   preferredProvider: providerEnum,
+  // Model preferences per provider (null = use default)
+  geminiModel: z.string().nullable().optional(),
+  claudeModel: z.string().nullable().optional(),
+  openaiModel: z.string().nullable().optional(),
   customInstructions: z
     .string()
     .max(4000, "Custom instructions must be 4000 characters or fewer")

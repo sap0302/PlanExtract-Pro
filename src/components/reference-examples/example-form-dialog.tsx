@@ -103,7 +103,7 @@ export function ExampleFormDialog({
       return;
     }
     if (rawText.trim().length < 10) {
-      toast.error("Please paste your PlanSwift output (at least 10 characters)");
+      toast.error("Please paste your takeoff output (at least 10 characters)");
       return;
     }
 
@@ -145,7 +145,7 @@ export function ExampleFormDialog({
             {isEdit ? "Edit Reference Example" : "Add Reference Example"}
           </DialogTitle>
           <DialogDescription>
-            Paste your verified PlanSwift extraction results. These will be used
+            Paste your verified takeoff extraction results. These will be used
             as reference examples to improve AI extraction accuracy.
           </DialogDescription>
         </DialogHeader>
@@ -178,7 +178,7 @@ export function ExampleFormDialog({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="raw-text">PlanSwift Output</Label>
+            <Label htmlFor="raw-text">Takeoff Output</Label>
             <Textarea
               id="raw-text"
               placeholder={PLANSWIFT_PLACEHOLDER}
@@ -188,7 +188,7 @@ export function ExampleFormDialog({
               className="min-h-[250px] font-mono text-xs"
             />
             <p className="text-xs text-muted-foreground">
-              Paste the full PlanSwift takeoff output. Include all items grouped by Type (Area, Count, Linear).
+              Paste the full takeoff output. Include all items grouped by Type (Area, Count, Linear).
             </p>
           </div>
 

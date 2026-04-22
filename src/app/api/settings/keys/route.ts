@@ -18,6 +18,9 @@ export async function GET() {
         openaiKeyEnc: true,
         geminiKeyEnc: true,
         preferredProvider: true,
+        geminiModel: true,
+        claudeModel: true,
+        openaiModel: true,
         customInstructions: true,
       },
     });
@@ -31,6 +34,9 @@ export async function GET() {
       hasOpenaiKey: !!user.openaiKeyEnc,
       hasGeminiKey: !!user.geminiKeyEnc,
       preferredProvider: user.preferredProvider,
+      geminiModel: user.geminiModel || "",
+      claudeModel: user.claudeModel || "",
+      openaiModel: user.openaiModel || "",
       customInstructions: user.customInstructions || "",
     });
   } catch (error) {
@@ -50,8 +56,6 @@ export async function PUT(req: Request) {
     }
 
     const body = await req.json();
-    console.log("[settings] PUT body keys:", Object.keys(body));
-
     const parsed = apiKeySettingsSchema.safeParse(body);
 
     if (!parsed.success) {
@@ -62,13 +66,28 @@ export async function PUT(req: Request) {
       );
     }
 
-    const { anthropicKey, openaiKey, geminiKey, preferredProvider, customInstructions } =
-      parsed.data;
+    const {
+      anthropicKey, openaiKey, geminiKey,
+      preferredProvider,
+      geminiModel, claudeModel, openaiModel,
+      customInstructions,
+    } = parsed.data;
 
     // Build update object — only update fields that were provided
     const updateData: Record<string, string | null> = {
       preferredProvider,
     };
+
+    // Handle model preferences: string → store, null/empty → clear, undefined → skip
+    if (geminiModel !== undefined) {
+      updateData.geminiModel = geminiModel && geminiModel.trim() ? geminiModel.trim() : null;
+    }
+    if (claudeModel !== undefined) {
+      updateData.claudeModel = claudeModel && claudeModel.trim() ? claudeModel.trim() : null;
+    }
+    if (openaiModel !== undefined) {
+      updateData.openaiModel = openaiModel && openaiModel.trim() ? openaiModel.trim() : null;
+    }
 
     // Handle customInstructions: string → store trimmed, null/empty → clear, undefined → skip
     if (customInstructions !== undefined) {
@@ -149,6 +168,9 @@ export async function PUT(req: Request) {
         openaiKeyEnc: true,
         geminiKeyEnc: true,
         preferredProvider: true,
+        geminiModel: true,
+        claudeModel: true,
+        openaiModel: true,
         customInstructions: true,
       },
     });
@@ -158,6 +180,9 @@ export async function PUT(req: Request) {
       hasOpenaiKey: !!updatedUser?.openaiKeyEnc,
       hasGeminiKey: !!updatedUser?.geminiKeyEnc,
       preferredProvider: updatedUser?.preferredProvider,
+      geminiModel: updatedUser?.geminiModel || "",
+      claudeModel: updatedUser?.claudeModel || "",
+      openaiModel: updatedUser?.openaiModel || "",
       customInstructions: updatedUser?.customInstructions || "",
     });
   } catch (error) {

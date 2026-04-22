@@ -48,6 +48,18 @@ interface MeasurementCanvasProps {
   onCalibrationComplete: (points: [Point, Point]) => void;
   pixelsPerFoot: number | null;
   isSpaceDown: boolean;
+  // AI region highlights
+  highlights?: Array<{
+    bbox: [number, number, number, number];
+    label: string;
+    confidence: number;
+    page: number;
+  }>;
+  onHighlightClick?: (highlight: {
+    bbox: [number, number, number, number];
+    label: string;
+    page: number;
+  }) => void;
 }
 
 export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, MeasurementCanvasProps>(
@@ -66,6 +78,8 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
       onCalibrationComplete,
       pixelsPerFoot,
       isSpaceDown,
+      highlights,
+      onHighlightClick,
     },
     ref
   ) {
@@ -173,8 +187,26 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
     );
 
     const handleDblClick = useCallback(() => {
-      if (activeTool === "linear" && activePoints.length >= 2) {
-        onMeasurementComplete("linear", activePoints, currentPage);
+      // A double-click also fires handleClick TWICE before this handler runs,
+      // adding 1-2 duplicate points at the double-click position. Clean up
+      // by removing trailing duplicate points (points within 2px of each other)
+      // before finishing the measurement.
+      let pts = [...activePoints];
+      while (pts.length > 1) {
+        const last = pts[pts.length - 1];
+        const prev = pts[pts.length - 2];
+        if (Math.abs(last.x - prev.x) < 3 && Math.abs(last.y - prev.y) < 3) {
+          pts.pop();
+        } else {
+          break;
+        }
+      }
+
+      if (activeTool === "linear" && pts.length >= 2) {
+        onMeasurementComplete("linear", pts, currentPage);
+        setActivePoints([]);
+      } else if (activeTool === "area" && pts.length >= 3) {
+        onMeasurementComplete("area", pts, currentPage);
         setActivePoints([]);
       }
     }, [activeTool, activePoints, currentPage, onMeasurementComplete]);
@@ -245,6 +277,49 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
         style={{ cursor: cursorStyle }}
       >
         <Layer>
+          {/* AI Region Highlights — rendered below measurements */}
+          {highlights?.map((h, i) => {
+            const topLeft = localToStage({ x: h.bbox[0], y: h.bbox[1] });
+            const bottomRight = localToStage({ x: h.bbox[2], y: h.bbox[3] });
+            const rectW = bottomRight.x - topLeft.x;
+            const rectH = bottomRight.y - topLeft.y;
+            return (
+              <Group key={`highlight-${i}`}>
+                <Rect
+                  x={topLeft.x}
+                  y={topLeft.y}
+                  width={rectW}
+                  height={rectH}
+                  fill="rgba(255, 200, 0, 0.12)"
+                  stroke="#FFB800"
+                  strokeWidth={2}
+                  dash={[8, 4]}
+                  cornerRadius={4}
+                  onClick={() => onHighlightClick?.(h)}
+                  onTap={() => onHighlightClick?.(h)}
+                />
+                {/* Label above the highlight */}
+                <Rect
+                  x={topLeft.x}
+                  y={topLeft.y - 18}
+                  width={Math.min(h.label.length * 6.5 + 12, rectW + 20)}
+                  height={16}
+                  fill="rgba(255, 184, 0, 0.9)"
+                  cornerRadius={3}
+                />
+                <Text
+                  x={topLeft.x + 6}
+                  y={topLeft.y - 16}
+                  text={h.label}
+                  fontSize={10}
+                  fill="#000"
+                  width={Math.min(h.label.length * 6.5 + 6, rectW + 14)}
+                  ellipsis
+                />
+              </Group>
+            );
+          })}
+
           {/* Existing measurements for current page */}
           {pageMeasurements.map((m) => {
             const isSelected = m.id === selectedId;

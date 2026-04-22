@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { extractPdfText } from "../pdf-utils";
+import { extractPdfText, extractTextWithPositions } from "../pdf-utils";
 import {
   SYSTEM_PROMPT,
   USER_PROMPT,
@@ -90,7 +90,63 @@ function makeNullable(schema: any): any {
 }
 
 /**
+ * Attempt to repair truncated JSON (e.g., from hitting max_completion_tokens).
+ * Closes unclosed brackets/braces to salvage partial results.
+ */
+function tryRepairTruncatedJson(text: string): unknown | null {
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Continue to repair
+  }
+
+  let cleaned = text.trimEnd();
+  cleaned = cleaned.replace(/,\s*$/, "");
+
+  const lastCompleteComma = cleaned.lastIndexOf(",");
+  const lastOpenBrace = cleaned.lastIndexOf("{");
+  const lastOpenBracket = cleaned.lastIndexOf("[");
+
+  // Try closing unclosed brackets/braces
+  const openBraces = (cleaned.match(/{/g) || []).length;
+  const closeBraces = (cleaned.match(/}/g) || []).length;
+  const openBrackets = (cleaned.match(/\[/g) || []).length;
+  const closeBrackets = (cleaned.match(/]/g) || []).length;
+
+  let suffix = "";
+  for (let i = 0; i < openBrackets - closeBrackets; i++) suffix += "]";
+  for (let i = 0; i < openBraces - closeBraces; i++) suffix += "}";
+
+  try {
+    return JSON.parse(cleaned + suffix);
+  } catch {
+    // Try trimming to last complete element
+  }
+
+  if (lastCompleteComma > Math.max(lastOpenBrace, lastOpenBracket)) {
+    const trimmed = cleaned.substring(0, lastCompleteComma);
+    const ob = (trimmed.match(/{/g) || []).length;
+    const cb = (trimmed.match(/}/g) || []).length;
+    const oB = (trimmed.match(/\[/g) || []).length;
+    const cB = (trimmed.match(/]/g) || []).length;
+
+    let s = "";
+    for (let i = 0; i < oB - cB; i++) s += "]";
+    for (let i = 0; i < ob - cb; i++) s += "}";
+
+    try {
+      return JSON.parse(trimmed + s);
+    } catch {
+      // Not salvageable
+    }
+  }
+
+  return null;
+}
+
+/**
  * Retry wrapper for OpenAI API calls.
+ * Handles 429 (rate limit), 503 (service unavailable), and 529 (overloaded).
  */
 async function callWithRetry(
   apiCall: () => Promise<OpenAI.Chat.Completions.ChatCompletion>,
@@ -104,17 +160,25 @@ async function callWithRetry(
       return await apiCall();
     } catch (error: unknown) {
       const errObj = error as Record<string, unknown>;
-      const isRateLimit =
-        errObj?.status === 429 ||
-        (error instanceof Error &&
-          (error.message.includes("429") ||
-            error.message.includes("rate_limit")));
+      const status = errObj?.status;
+      const msg = error instanceof Error ? error.message.toLowerCase() : "";
 
-      if (!isRateLimit || attempt === MAX_RETRIES) throw error;
+      const isRetryable =
+        status === 429 ||
+        status === 503 ||
+        status === 529 ||
+        msg.includes("429") ||
+        msg.includes("503") ||
+        msg.includes("rate_limit") ||
+        msg.includes("rate limit") ||
+        msg.includes("overloaded") ||
+        msg.includes("server_error");
+
+      if (!isRetryable || attempt === MAX_RETRIES) throw error;
 
       const waitSec = DEFAULT_BACKOFF_SECONDS[attempt];
       console.log(
-        `Rate limited by OpenAI API. Waiting ${waitSec}s before retry ${attempt + 1}/${MAX_RETRIES}...`
+        `[openai] ${status || "error"}: ${msg.slice(0, 80)}. Waiting ${waitSec}s before retry ${attempt + 1}/${MAX_RETRIES}...`
       );
       if (onRetry) await onRetry(attempt + 1, waitSec);
       await new Promise((resolve) => setTimeout(resolve, waitSec * 1000));
@@ -134,7 +198,7 @@ export class OpenAIProvider implements AIProvider {
       apiKey: config.apiKey,
       timeout: 20 * 60 * 1000, // 20 minutes — large PDFs can take >10min per chunk
     });
-    this.model = config.model || "gpt-5.2";
+    this.model = config.model || "gpt-5.4";
   }
 
   async extractFromPDF(
@@ -145,11 +209,18 @@ export class OpenAIProvider implements AIProvider {
     const pdfContext = await extractPdfText(pdfBase64);
     const extractionSchema = toStrictJsonSchema(EXTRACTION_TOOL.input_schema);
 
+    // Extract positioned text from the PDF text layer (pdfjs-dist)
+    const pdfBuffer = Buffer.from(pdfBase64, "base64");
+    const positionedText = await extractTextWithPositions(pdfBuffer);
+    const positionedTextContext = positionedText
+      ? `\n\n--- PDF Text Layer (with coordinates — use to confirm small callouts) ---\n${positionedText}`
+      : "";
+
     const response = await callWithRetry(
       () =>
         this.client.chat.completions.create({
           model: this.model,
-          max_completion_tokens: 32768,
+          max_completion_tokens: 65536,
           temperature: 0.1,
           response_format: {
             type: "json_schema",
@@ -173,7 +244,7 @@ export class OpenAIProvider implements AIProvider {
                 },
                 {
                   type: "text",
-                  text: `${pdfContext}\n\n${userPrompt || USER_PROMPT}`,
+                  text: `${pdfContext}${positionedTextContext}\n\n${userPrompt || USER_PROMPT}`,
                 },
               ],
             },
@@ -187,7 +258,32 @@ export class OpenAIProvider implements AIProvider {
       throw new Error("OpenAI returned an empty response");
     }
 
-    const result = JSON.parse(content) as ExtractionResult;
+    // Check for truncation (finish_reason !== "stop")
+    const finishReason = response.choices[0]?.finish_reason;
+    if (finishReason === "length") {
+      console.warn(
+        `[openai] Response truncated (finish_reason=length, ${content.length} chars). Attempting JSON repair...`
+      );
+    }
+
+    let result: ExtractionResult;
+    try {
+      result = JSON.parse(content) as ExtractionResult;
+    } catch {
+      const repaired = tryRepairTruncatedJson(content);
+      if (repaired && typeof repaired === "object") {
+        console.warn(
+          `[openai] Repaired truncated JSON (${content.length} chars)`
+        );
+        result = repaired as ExtractionResult;
+      } else {
+        throw new Error(
+          `OpenAI returned invalid JSON (${content.length} chars, finish_reason=${finishReason}). ` +
+            `Response may have been truncated by token limit.`
+        );
+      }
+    }
+
     if (!result.items || !Array.isArray(result.items)) result.items = [];
     if (!result.summary || typeof result.summary !== "string")
       result.summary = "";
@@ -205,6 +301,13 @@ export class OpenAIProvider implements AIProvider {
     const verificationSchema = toStrictJsonSchema(
       VERIFICATION_TOOL.input_schema
     );
+
+    // Extract positioned text for verification cross-check
+    const pdfBuffer = Buffer.from(pdfBase64, "base64");
+    const positionedText = await extractTextWithPositions(pdfBuffer);
+    const positionedTextContext = positionedText
+      ? `\n\n--- PDF Text Layer (with coordinates) ---\n${positionedText}`
+      : "";
 
     const response = await callWithRetry(
       () =>
@@ -234,7 +337,7 @@ export class OpenAIProvider implements AIProvider {
                 },
                 {
                   type: "text",
-                  text: `${pdfContext}\n\n${verificationPrompt}`,
+                  text: `${pdfContext}${positionedTextContext}\n\n${verificationPrompt}`,
                 },
               ],
             },
@@ -253,7 +356,25 @@ export class OpenAIProvider implements AIProvider {
       };
     }
 
-    const result = JSON.parse(content) as VerificationResult;
+    let result: VerificationResult;
+    try {
+      result = JSON.parse(content) as VerificationResult;
+    } catch {
+      const repaired = tryRepairTruncatedJson(content);
+      if (repaired && typeof repaired === "object") {
+        console.warn(`[openai] Repaired truncated verification JSON`);
+        result = repaired as VerificationResult;
+      } else {
+        console.warn(`[openai] Could not parse verification response, returning empty`);
+        return {
+          corrections: [],
+          additions: [],
+          nameCorrections: [],
+          verificationNotes: "Verification response was truncated and could not be repaired.",
+        };
+      }
+    }
+
     if (!result.corrections || !Array.isArray(result.corrections))
       result.corrections = [];
     if (!result.additions || !Array.isArray(result.additions))

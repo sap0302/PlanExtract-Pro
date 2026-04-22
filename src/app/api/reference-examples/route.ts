@@ -27,13 +27,13 @@ export async function POST(req: Request) {
     const body = await req.json();
     const validated = referenceExampleSchema.parse(body);
 
-    // Enforce max 10 examples per user
+    // Enforce max 20 examples per user (manual + auto-generated combined)
     const count = await prisma.referenceExample.count({
       where: { userId: session.user.id },
     });
-    if (count >= 10) {
+    if (count >= 20) {
       return NextResponse.json(
-        { error: "Maximum of 10 reference examples allowed. Delete one before adding another." },
+        { error: "Maximum of 20 reference examples allowed. Delete or deactivate one before adding another." },
         { status: 400 }
       );
     }

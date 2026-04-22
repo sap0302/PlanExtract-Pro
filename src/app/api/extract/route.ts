@@ -58,6 +58,8 @@ function formatVerificationDiagnostics(
 }
 
 export async function POST(req: Request) {
+  const extractionStartTime = Date.now();
+
   try {
     const session = await auth();
     if (!session?.user?.id) {
@@ -100,6 +102,9 @@ export async function POST(req: Request) {
         openaiKeyEnc: true,
         geminiKeyEnc: true,
         preferredProvider: true,
+        geminiModel: true,
+        claudeModel: true,
+        openaiModel: true,
         customInstructions: true,
       },
     });
@@ -146,6 +151,20 @@ export async function POST(req: Request) {
       return null;
     };
 
+    // Helper to resolve model for a provider (user preference → env → provider default)
+    const modelMap: Record<Provider, string | null | undefined> = {
+      anthropic: user.claudeModel,
+      openai: user.openaiModel,
+      gemini: user.geminiModel,
+    };
+    const resolveModel = (p: Provider): string | undefined => {
+      const userModel = modelMap[p];
+      if (userModel) return userModel;
+      // Fallback to env for Anthropic
+      if (p === "anthropic") return process.env.CLAUDE_MODEL || undefined;
+      return undefined;
+    };
+
     // Build consensus providers array (or single provider)
     let aiProvider: AIProvider;
     let consensusProviders: Array<{ provider: Provider; instance: AIProvider }> = [];
@@ -155,7 +174,7 @@ export async function POST(req: Request) {
       for (const p of VALID_PROVIDERS) {
         const key = resolveKey(p);
         if (key) {
-          consensusProviders.push({ provider: p, instance: createProvider(p, key) });
+          consensusProviders.push({ provider: p, instance: createProvider(p, key, resolveModel(p)) });
         }
       }
       if (consensusProviders.length < 2) {
@@ -181,7 +200,8 @@ export async function POST(req: Request) {
           { status: 400 }
         );
       }
-      aiProvider = createProvider(selectedProvider, apiKey);
+      aiProvider = createProvider(selectedProvider, apiKey, resolveModel(selectedProvider));
+      console.log(`[extract] Using ${selectedProvider} with model: ${resolveModel(selectedProvider) || "(default)"}`);
     }
 
     // Create extraction record
@@ -220,22 +240,51 @@ export async function POST(req: Request) {
       let processBuffer: Uint8Array;
       let usedPageRangeExtraction = false;
       if (pageRangesStr.trim()) {
+        // IMPORTANT: no silent fallback to the full PDF here.
+        //
+        // Previously this block caught any extraction failure and silently
+        // reverted to the full PDF, which meant users who asked for pages
+        // 1-5, 15-25 could end up getting ALL pages extracted without
+        // knowing it. Scope-creep in their takeoff was invisible.
+        //
+        // Instead: try the primary extraction, and on failure fail LOUDLY
+        // with a 400 so the user sees exactly why. The user can then adjust
+        // their page range, try a cleaner PDF, or remove the page-range
+        // restriction intentionally.
+        const totalPages = await getPdfPageCount(rawBuffer);
+        let ranges: Array<[number, number]>;
         try {
-          const totalPages = await getPdfPageCount(rawBuffer);
-          const ranges = parsePageRanges(pageRangesStr, totalPages);
+          ranges = parsePageRanges(pageRangesStr, totalPages);
+        } catch (parseErr) {
+          const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+          console.warn(`[extract] parsePageRanges failed for "${pageRangesStr}":`, msg);
+          return NextResponse.json(
+            {
+              error: `Invalid page range "${pageRangesStr}": ${msg}`,
+              hint: "Use formats like \"1-5\" (single range), \"1-5, 15-25\" (multiple ranges), or \"3, 7, 12\" (individual pages). All page numbers must be within 1-" + totalPages + ".",
+            },
+            { status: 400 }
+          );
+        }
+
+        try {
           processBuffer = await extractPageRanges(rawBuffer, ranges);
           usedPageRangeExtraction = true;
           console.log(
-            `Extracted pages [${pageRangesStr}] from ${totalPages}-page PDF`
+            `[extract] Extracted pages [${pageRangesStr}] from ${totalPages}-page PDF (${(processBuffer.length / 1024 / 1024).toFixed(1)} MB result)`
           );
-        } catch (pageRangeError) {
-          console.warn(
-            "[extract] Page range extraction failed, falling back to full PDF:",
-            pageRangeError instanceof Error
-              ? pageRangeError.message
-              : pageRangeError
+        } catch (extractErr) {
+          const msg = extractErr instanceof Error ? extractErr.message : String(extractErr);
+          console.warn(`[extract] extractPageRanges failed for [${pageRangesStr}]:`, msg);
+          return NextResponse.json(
+            {
+              error: `Page-range extraction failed: ${msg}`,
+              hint: "This PDF may have complex internal structure that pdf-lib can't extract from. Try a narrower range, upload the full PDF without page-range filter, or re-export the source PDF from its authoring tool.",
+              pagesRequested: pageRangesStr,
+              totalPages,
+            },
+            { status: 400 }
           );
-          processBuffer = rawBuffer;
         }
       } else {
         processBuffer = rawBuffer;
@@ -243,7 +292,17 @@ export async function POST(req: Request) {
 
       // Check if the PDF needs splitting
       const base64Size = Math.ceil(processBuffer.length * 1.34);
-      const maxBase64Size = 20 * 1024 * 1024; // 20MB base64 threshold — safe for all providers (Anthropic 32MB, OpenAI 25MB, Gemini 100MB limits)
+      // When HIGH_DPI_RENDER is enabled, images are much larger than raw PDF —
+      // use smaller chunks (~5MB of source PDF = ~25MB of rendered images)
+      const highDpiMode =
+        selectedProvider === "anthropic" && process.env.HIGH_DPI_RENDER !== "false";
+      // Gemini inlineData limit is 20MB (not 100MB — that's their File API).
+      // For larger PDFs, smart chunking kicks in automatically.
+      const maxBase64Size = highDpiMode
+        ? 5 * 1024 * 1024 // 5MB for high-DPI mode (rendered images ~5x larger)
+        : selectedProvider === "gemini"
+          ? 25 * 1024 * 1024 // Gemini: 20MB inline limit → 25MB base64 (~19MB raw)
+          : 28 * 1024 * 1024; // Anthropic: 32MB request limit → 28MB base64 PDF leaves ~4MB for prompt + tools (~21MB raw PDF)
 
       let result;
 
@@ -372,6 +431,24 @@ export async function POST(req: Request) {
         const pdfChunks = chunks.map((c) => c.buffer.toString("base64"));
         const chunkLabels = chunks.map((c) => c.label);
 
+        // ── Free the raw chunk sub-buffers ──
+        // We've already converted each chunk's buffer to base64 above, so the
+        // raw Buffer objects inside `chunks[i].buffer` are no longer needed.
+        // For a 100+ MB PDF with 10 chunks of ~21 MB each, that's ~210 MB of
+        // Buffer memory still held by the array. Nulling these lets V8
+        // reclaim it before chunked extraction starts processing, which
+        // reduces peak memory pressure and helps avoid "Zone Allocation
+        // failed" OOM on large PDFs.
+        //
+        // NOTE: rawBuffer and processBuffer are intentionally kept alive —
+        // they're still referenced later for PDF persistence (line 758) and
+        // verification retry fallback.
+        for (const c of chunks) {
+          // @ts-expect-error — intentionally clearing readonly field to free memory
+          c.buffer = null;
+        }
+        if (typeof global.gc === "function") global.gc();
+
         result = await extractFromPDFChunked(
           aiProvider,
           pdfChunks,
@@ -468,6 +545,45 @@ export async function POST(req: Request) {
           }));
           result.summary +=
             " (Warning: Most quantities appear estimated — round numbers detected. Results may be inaccurate.)";
+        }
+
+        // ─── Station Math Hallucination Detection ────────────────────────
+        // Station math should produce decimal pipe lengths (239.84, 42.75) NOT whole numbers.
+        // If an item claims quantityMethod="station_math" but has a whole-foot quantity,
+        // the AI is lying about where the number came from.
+        const stationMathItems = sanitizedItems.filter(
+          (i) => i.quantityMethod === "station_math" && i.measurementType === "linear"
+        );
+        const fakeStationMath = stationMathItems.filter((i) => {
+          const q = i.quantity;
+          return q >= 20 && q === Math.round(q) && q % 5 === 0;
+        });
+
+        if (fakeStationMath.length > 0) {
+          console.warn(
+            `[extract] FAKE STATION MATH: ${fakeStationMath.length} items claim station_math ` +
+              `but have round quantities (likely fabricated): ${fakeStationMath.map(i => `${i.name}=${i.quantity}`).join(", ")}`
+          );
+          sanitizedItems = sanitizedItems.map((item) => {
+            if (
+              item.quantityMethod === "station_math" &&
+              item.measurementType === "linear" &&
+              item.quantity >= 20 &&
+              item.quantity === Math.round(item.quantity) &&
+              item.quantity % 5 === 0
+            ) {
+              return {
+                ...item,
+                confidence: "low",
+                quantityMethod: "scale_estimate" as const,
+                assumptions: [
+                  ...(item.assumptions || []),
+                  "Claimed station_math but round number suggests the AI did not actually read station values from a profile sheet",
+                ],
+              };
+            }
+            return item;
+          });
         }
       }
 
@@ -624,56 +740,92 @@ export async function POST(req: Request) {
         }
       }
 
-      // Save results to database
-      await prisma.$transaction(async (tx) => {
-        if (sanitizedItems.length > 0) {
-          await tx.item.createMany({
-            data: sanitizedItems.map((item, index) => ({
-              name: item.name,
-              description: item.description || null,
-              measurementType: item.measurementType,
-              system: item.system,
-              quantity: item.quantity,
-              unit: item.unit,
-              confidence: item.confidence,
-              costEach: 0,
-              markupPercent: 0,
-              priceEach: 0,
-              priceTotal: 0,
-              sortOrder: index,
-              extractionId: extraction.id,
-              // ── Audit & traceability fields ──
-              sourcePages: stringifyJsonArray(item.sourcePages),
-              sourceSheetId: item.sourceSheetId || null,
-              quantityMethod: item.quantityMethod || null,
-              evidence: item.evidence || null,
-              assumptions: stringifyJsonArray(item.assumptions),
-              dedupeKey: item.dedupeKey || null,
-              nodeRange: item.nodeRange || null,
-              stationRange: item.stationRange || null,
-              isDemo: item.isDemo ?? false,
-              folderPath: item.folderPath || computeFolderPath(item),
-            })),
-          });
-        }
-
-        await tx.extraction.update({
-          where: { id: extraction.id },
-          data: {
-            status: "completed",
-            summary: finalSummary,
-            rawResponse: JSON.stringify(result),
-            verified: verificationApplied,
-            verificationDiagnostics: verificationDiagnosticsJson,
-            pdfData: Buffer.from(rawBuffer),
-          },
+      // ── Save results to database ──
+      // Split into three separate writes to avoid transaction timeouts:
+      //
+      // 1. Items (fast): ~100 small rows via createMany. Keep in a brief
+      //    transaction so all-or-nothing on item creation.
+      // 2. Extraction metadata WITHOUT pdfData (fast): marks the extraction
+      //    completed so the user can see the results immediately in the UI.
+      // 3. pdfData BLOB (slow, large PDFs especially on OneDrive-synced
+      //    SQLite): written separately so its 100+ MB write doesn't block
+      //    or time out the other writes. If this step fails, the extraction
+      //    is still complete and usable — only the cached PDF for later
+      //    re-extract/scale/region features is missing.
+      if (sanitizedItems.length > 0) {
+        await prisma.item.createMany({
+          data: sanitizedItems.map((item, index) => ({
+            name: item.name,
+            description: item.description || null,
+            measurementType: item.measurementType,
+            system: item.system,
+            quantity: item.quantity,
+            unit: item.unit,
+            confidence: item.confidence,
+            costEach: 0,
+            markupPercent: 0,
+            priceEach: 0,
+            priceTotal: 0,
+            sortOrder: index,
+            extractionId: extraction.id,
+            // ── Audit & traceability fields ──
+            sourcePages: stringifyJsonArray(item.sourcePages),
+            sourceSheetId: item.sourceSheetId || null,
+            quantityMethod: item.quantityMethod || null,
+            evidence: item.evidence || null,
+            assumptions: stringifyJsonArray(item.assumptions),
+            dedupeKey: item.dedupeKey || null,
+            nodeRange: item.nodeRange || null,
+            stationRange: item.stationRange || null,
+            isDemo: item.isDemo ?? false,
+            folderPath: item.folderPath || computeFolderPath(item),
+            // Learning system: snapshot original AI values
+            originalAiQuantity: item.quantity,
+            originalAiName: item.name,
+          })),
         });
+      }
+
+      await prisma.extraction.update({
+        where: { id: extraction.id },
+        data: {
+          status: "completed",
+          summary: finalSummary,
+          rawResponse: JSON.stringify(result),
+          verified: verificationApplied,
+          verificationDiagnostics: verificationDiagnosticsJson,
+          durationMs: Date.now() - extractionStartTime,
+        },
       });
+
+      // Separate pdfData write — this is the slow one. Wrapped in try/catch
+      // so a failure here doesn't roll back the extraction completion. The
+      // user still gets their items; only cached-PDF features (re-extract,
+      // scale bar, region highlights) won't work without this.
+      try {
+        await prisma.extraction.update({
+          where: { id: extraction.id },
+          data: { pdfData: Buffer.from(rawBuffer) },
+        });
+      } catch (pdfSaveError) {
+        console.warn(
+          `[extract] Failed to save pdfData blob (${(rawBuffer.length / 1024 / 1024).toFixed(1)} MB). Extraction still completed. Cached-PDF features (re-extract, scale, regions) will not work for this extraction.`,
+          pdfSaveError instanceof Error ? pdfSaveError.message : pdfSaveError
+        );
+      }
+
+      const durationMs = Date.now() - extractionStartTime;
+      const durationSec = (durationMs / 1000).toFixed(1);
+      console.log(`[extract] Extraction completed in ${durationSec}s (${sanitizedItems.length} items)`);
 
       const response: Record<string, unknown> = {
         extractionId: extraction.id,
         status: "completed",
         summary: finalSummary,
+        durationMs,
+        durationFormatted: durationMs >= 60000
+          ? `${Math.floor(durationMs / 60000)}m ${Math.round((durationMs % 60000) / 1000)}s`
+          : `${durationSec}s`,
         counts: {
           totalItems: sanitizedItems.length,
           area: sanitizedItems.filter((i) => i.measurementType === "area")
@@ -716,6 +868,18 @@ export async function POST(req: Request) {
         userMessage =
           "The PDF became corrupted during page extraction. " +
           "Try uploading the full PDF without page ranges, or re-export it from the source application.";
+      } else if (
+        errMsg.includes("429") ||
+        errMsg.includes("RATE_LIMIT") ||
+        errMsg.includes("RESOURCE_EXHAUSTED") ||
+        errMsg.includes("rate limit") ||
+        errMsg.includes("overloaded") ||
+        errMsg.includes("high demand")
+      ) {
+        statusCode = 429;
+        userMessage =
+          "The AI provider is currently experiencing high demand. " +
+          "All retry attempts were exhausted. Please wait a few minutes and try again.";
       }
 
       await prisma.extraction.update({
@@ -723,6 +887,7 @@ export async function POST(req: Request) {
         data: {
           status: "failed",
           errorMessage: errMsg,
+          durationMs: Date.now() - extractionStartTime,
         },
       });
 

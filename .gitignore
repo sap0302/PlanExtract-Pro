@@ -53,3 +53,6 @@ prisma/dev.db-journal
 
 # Dev scripts
 inspect-db.mjs
+
+# Windows shortcuts (local dev machine artifacts)
+*.lnk

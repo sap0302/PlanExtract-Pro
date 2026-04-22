@@ -130,7 +130,7 @@ export function ExamplesList({ initialExamples }: ExamplesListProps) {
         <div>
           <h1 className="text-3xl font-bold">Reference Examples</h1>
           <p className="text-muted-foreground mt-1">
-            Add verified PlanSwift results to improve AI extraction accuracy.
+            Add verified results to improve AI extraction accuracy.
             {examples.length > 0 && (
               <span className="ml-1">
                 {activeCount} of {examples.length} active.
@@ -161,7 +161,7 @@ export function ExamplesList({ initialExamples }: ExamplesListProps) {
             </svg>
             <h3 className="text-lg font-semibold">No reference examples yet</h3>
             <p className="text-sm text-muted-foreground mt-1 text-center max-w-md">
-              Add your verified PlanSwift extraction results as reference
+              Add your verified extraction results as reference
               examples. The AI will use these to produce more accurate quantity
               takeoffs that match your naming conventions.
             </p>

@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI, type GenerateContentResult } from "@google/generative-ai";
-import { extractPdfText } from "../pdf-utils";
+import { extractPdfText, extractTextWithPositions } from "../pdf-utils";
 import {
   SYSTEM_PROMPT,
   USER_PROMPT,
@@ -127,6 +127,7 @@ function getFinishReason(response: GenerateContentResult): string | undefined {
 
 /**
  * Retry wrapper for Gemini API calls.
+ * Handles 429 (rate limit), 503 (high demand / timeout), and RESOURCE_EXHAUSTED.
  */
 async function callWithRetry(
   apiCall: () => Promise<GenerateContentResult>,
@@ -140,18 +141,27 @@ async function callWithRetry(
       return await apiCall();
     } catch (error: unknown) {
       const errObj = error as Record<string, unknown>;
-      const isRateLimit =
-        errObj?.status === 429 ||
-        (error instanceof Error &&
-          (error.message.includes("429") ||
-            error.message.includes("RATE_LIMIT") ||
-            error.message.includes("RESOURCE_EXHAUSTED")));
+      const status = errObj?.status;
+      const msg = error instanceof Error ? error.message.toLowerCase() : "";
 
-      if (!isRateLimit || attempt === MAX_RETRIES) throw error;
+      // Retry on transient Gemini errors:
+      //   429 = rate limit, 503 = high demand / timeout / service unavailable
+      const isRetryable =
+        status === 429 ||
+        status === 503 ||
+        msg.includes("429") ||
+        msg.includes("503") ||
+        msg.includes("rate_limit") ||
+        msg.includes("resource_exhausted") ||
+        msg.includes("high demand") ||
+        msg.includes("overloaded") ||
+        msg.includes("timed out");
+
+      if (!isRetryable || attempt === MAX_RETRIES) throw error;
 
       const waitSec = DEFAULT_BACKOFF_SECONDS[attempt];
       console.log(
-        `Rate limited by Gemini API. Waiting ${waitSec}s before retry ${attempt + 1}/${MAX_RETRIES}...`
+        `[gemini] ${status || "error"}: ${msg.slice(0, 80)}. Waiting ${waitSec}s before retry ${attempt + 1}/${MAX_RETRIES}...`
       );
       if (onRetry) await onRetry(attempt + 1, waitSec);
       await new Promise((resolve) => setTimeout(resolve, waitSec * 1000));
@@ -167,7 +177,7 @@ export class GeminiProvider implements AIProvider {
 
   constructor(config: ProviderConfig) {
     this.genAI = new GoogleGenerativeAI(config.apiKey);
-    this.modelName = config.model || "gemini-2.5-pro";
+    this.modelName = config.model || "gemini-2.5-flash";
   }
 
   async extractFromPDF(
@@ -190,15 +200,25 @@ export class GeminiProvider implements AIProvider {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
 
-    const model = this.genAI.getGenerativeModel({
-      model: this.modelName,
-      systemInstruction: SYSTEM_PROMPT,
-      generationConfig,
-    });
+    const model = this.genAI.getGenerativeModel(
+      {
+        model: this.modelName,
+        systemInstruction: SYSTEM_PROMPT,
+        generationConfig,
+      },
+      { timeout: 300_000 } // 5 min request timeout — prevents hanging on 503 "timed out"
+    );
 
-    // Extract text to supplement visual PDF analysis (helps with OCR-quality plans)
+    // Extract text to supplement visual PDF analysis
     const pdfText = await extractPdfText(pdfBase64);
     const textContext = pdfText.startsWith("[") ? "" : `\n\n--- Extracted Text (for reference) ---\n${pdfText}`;
+
+    // Extract positioned text from the PDF text layer (pdfjs-dist)
+    const pdfBuffer = Buffer.from(pdfBase64, "base64");
+    const positionedText = await extractTextWithPositions(pdfBuffer);
+    const positionedTextContext = positionedText
+      ? `\n\n--- PDF Text Layer (with coordinates — use to confirm small callouts) ---\n${positionedText}`
+      : "";
 
     const response = await callWithRetry(
       () =>
@@ -213,7 +233,7 @@ export class GeminiProvider implements AIProvider {
                     data: pdfBase64,
                   },
                 },
-                { text: (userPrompt || USER_PROMPT) + textContext },
+                { text: (userPrompt || USER_PROMPT) + textContext + positionedTextContext },
               ],
             },
           ],
@@ -280,11 +300,14 @@ export class GeminiProvider implements AIProvider {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
 
-    const model = this.genAI.getGenerativeModel({
-      model: this.modelName,
-      systemInstruction: VERIFICATION_SYSTEM_PROMPT,
-      generationConfig,
-    });
+    const model = this.genAI.getGenerativeModel(
+      {
+        model: this.modelName,
+        systemInstruction: VERIFICATION_SYSTEM_PROMPT,
+        generationConfig,
+      },
+      { timeout: 300_000 }
+    );
 
     const response = await callWithRetry(
       () =>

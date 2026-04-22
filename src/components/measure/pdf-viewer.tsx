@@ -12,7 +12,8 @@ let pdfjsModule: any = null;
 async function getPdfjs(): Promise<any> {
   if (pdfjsModule) return pdfjsModule;
   const lib = await import("pdfjs-dist");
-  lib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${lib.version}/build/pdf.worker.min.mjs`;
+  // Use local worker copy (public/pdf.worker.min.mjs) to avoid CDN network errors
+  lib.GlobalWorkerOptions.workerSrc = `/pdf.worker.min.mjs`;
   pdfjsModule = lib;
   return lib;
 }
@@ -53,20 +54,83 @@ export function PdfViewer({
   const isPanning = useRef(false);
   const panStart = useRef({ x: 0, y: 0 });
   const [overlayDims, setOverlayDims] = useState({ width: 0, height: 0 });
+  const [loadError, setLoadError] = useState<{ title: string; detail: string } | null>(null);
 
   // Load PDF document (dynamic import to avoid SSR DOMMatrix error)
   useEffect(() => {
     let cancelled = false;
     const loadPdf = async () => {
       try {
+        setLoadError(null);
+        // Preflight fetch so we can detect our API's structured 404 responses
+        // (e.g. "PDF not stored for this extraction") and show a specific,
+        // actionable message instead of pdfjs's generic parse error.
+        // credentials: "include" guarantees the NextAuth session cookie rides
+        // along in all browser SameSite configurations.
+        const preflight = await fetch(pdfUrl, { credentials: "include" });
+        if (!preflight.ok) {
+          let reason = "unknown";
+          let fileName: string | undefined;
+          try {
+            const body = (await preflight.clone().json()) as {
+              reason?: string;
+              fileName?: string;
+            };
+            reason = body.reason || "unknown";
+            fileName = body.fileName;
+          } catch {
+            // not json
+          }
+          if (cancelled) return;
+          if (preflight.status === 401) {
+            setLoadError({
+              title: "Not signed in",
+              detail: "Your session expired. Return to the main window and sign back in, then reopen the measure window.",
+            });
+          } else if (reason === "not_stored") {
+            setLoadError({
+              title: "PDF not cached for this extraction",
+              detail: `The file ${fileName ? `"${fileName}" ` : ""}was not saved to the database (this can happen on very large files). Re-upload the PDF from the extraction detail page to enable measurement.`,
+            });
+          } else if (preflight.status === 404) {
+            setLoadError({
+              title: "Extraction not found",
+              detail: "This extraction no longer exists or doesn't belong to your account.",
+            });
+          } else {
+            setLoadError({
+              title: `Failed to load PDF (HTTP ${preflight.status})`,
+              detail: "The server couldn't deliver the cached PDF for this extraction. Try refreshing this tab.",
+            });
+          }
+          return;
+        }
+
+        // Read the PDF body from the SAME preflight response — avoids
+        // double-fetching a 100+ MB file and sidesteps pdfjs's internal XHR
+        // (which has been failing with "network error" on large same-origin
+        // PDFs served from the Next.js API, likely due to range-request
+        // handling or the OneDrive-synced SQLite response latency). Loading
+        // the whole PDF into an ArrayBuffer costs RAM proportional to file
+        // size, but that's fine up to a few hundred MB in a browser tab.
+        const arrayBuffer = await preflight.arrayBuffer();
+        if (cancelled) return;
+
         const pdfjsLib = await getPdfjs();
-        const doc = await pdfjsLib.getDocument(pdfUrl).promise;
+        const doc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         if (!cancelled) {
           setPdfDoc(doc);
           setPageCount(doc.numPages);
         }
       } catch (err) {
         console.error("Failed to load PDF:", err);
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : String(err);
+          setLoadError({
+            title: "Failed to load PDF",
+            detail: message,
+          });
+        }
       }
     };
     loadPdf();
@@ -148,12 +212,16 @@ export function PdfViewer({
     return () => ro.disconnect();
   }, []);
 
-  // Pan: middle mouse always, left-click in select mode, or left-click when holding space
+  // Pan: middle mouse always, RIGHT mouse always (so you can pan while
+  // drawing measurements), left-click in select mode, or left-click when
+  // holding space
   const canPan = activeTool === "select" || isSpaceDown;
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
-      if (e.button === 1 || (e.button === 0 && canPan)) {
+      // Right mouse (button 2) or middle mouse (button 1) → always pan
+      // Left mouse (button 0) → pan only in select mode or when Space is held
+      if (e.button === 2 || e.button === 1 || (e.button === 0 && canPan)) {
         isPanning.current = true;
         panStart.current = { x: e.clientX - panOffset.x, y: e.clientY - panOffset.y };
         e.preventDefault();
@@ -178,30 +246,28 @@ export function PdfViewer({
     isPanning.current = false;
   }, []);
 
-  // Zoom to mouse cursor position with Ctrl+scroll
+  // Zoom to mouse cursor position with scroll wheel (no Ctrl needed)
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        const delta = e.deltaY > 0 ? -0.15 : 0.15;
-        const newZoom = Math.max(0.25, Math.min(5, zoom + delta));
-        if (newZoom === zoom) return;
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.05 : 0.05; // 5% increments for smooth zoom
+      const newZoom = Math.max(0.1, Math.min(10, zoom + delta));
+      if (newZoom === zoom) return;
 
-        // Zoom centered on cursor position
-        const rect = containerRef.current?.getBoundingClientRect();
-        if (rect) {
-          const cursorX = e.clientX - rect.left;
-          const cursorY = e.clientY - rect.top;
-          // Point in PDF space under cursor before zoom
-          const pdfX = (cursorX - panOffset.x) / zoom;
-          const pdfY = (cursorY - panOffset.y) / zoom;
-          // New pan so that same PDF point stays under cursor
-          const newPanX = cursorX - pdfX * newZoom;
-          const newPanY = cursorY - pdfY * newZoom;
-          onPanOffsetChange({ x: newPanX, y: newPanY });
-        }
-        onZoomChange(newZoom);
+      // Zoom centered on cursor position
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (rect) {
+        const cursorX = e.clientX - rect.left;
+        const cursorY = e.clientY - rect.top;
+        // Point in PDF space under cursor before zoom
+        const pdfX = (cursorX - panOffset.x) / zoom;
+        const pdfY = (cursorY - panOffset.y) / zoom;
+        // New pan so that same PDF point stays under cursor
+        const newPanX = cursorX - pdfX * newZoom;
+        const newPanY = cursorY - pdfY * newZoom;
+        onPanOffsetChange({ x: newPanX, y: newPanY });
       }
+      onZoomChange(newZoom);
     },
     [zoom, onZoomChange, panOffset, onPanOffsetChange]
   );
@@ -253,11 +319,11 @@ export function PdfViewer({
           Next ▶
         </Button>
         <div className="ml-auto flex items-center gap-1">
-          <Button variant="outline" size="sm" onClick={() => onZoomChange(Math.max(0.25, zoom - 0.25))} title="Zoom out  -">
+          <Button variant="outline" size="sm" onClick={() => onZoomChange(Math.max(0.1, zoom - 0.1))} title="Zoom out  -">
             −
           </Button>
           <span className="text-sm w-14 text-center font-mono">{Math.round(zoom * 100)}%</span>
-          <Button variant="outline" size="sm" onClick={() => onZoomChange(Math.min(5, zoom + 0.25))} title="Zoom in  +">
+          <Button variant="outline" size="sm" onClick={() => onZoomChange(Math.min(10, zoom + 0.1))} title="Zoom in  +">
             +
           </Button>
           <Button variant="outline" size="sm" onClick={() => onZoomChange(1)} title="Reset zoom">
@@ -278,7 +344,16 @@ export function PdfViewer({
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
         onWheel={handleWheel}
+        onContextMenu={(e) => e.preventDefault()} // Suppress right-click menu so right-drag pans
       >
+        {loadError ? (
+          <div className="absolute inset-0 flex items-center justify-center p-6">
+            <div className="max-w-md rounded border border-red-200 bg-red-50 p-4 text-sm text-red-900">
+              <p className="font-semibold mb-2">{loadError.title}</p>
+              <p>{loadError.detail}</p>
+            </div>
+          </div>
+        ) : null}
         <div
           style={{
             transform: `translate(${panOffset.x}px, ${panOffset.y}px)`,

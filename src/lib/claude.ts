@@ -169,7 +169,7 @@ export async function extractFromPDF(
   userPrompt?: string,
   onRetry?: OnRetryCallback
 ): Promise<ExtractionResult> {
-  const model = process.env.CLAUDE_MODEL || "claude-sonnet-4-20250514";
+  const model = process.env.CLAUDE_MODEL || "claude-opus-4-6";
 
   const response = await callWithRetry(
     () =>
@@ -337,7 +337,7 @@ export async function verifyExtraction(
   items: ExtractedItem[],
   onRetry?: OnRetryCallback
 ): Promise<VerificationResult> {
-  const model = process.env.CLAUDE_MODEL || "claude-sonnet-4-20250514";
+  const model = process.env.CLAUDE_MODEL || "claude-opus-4-6";
   const userPrompt = buildVerificationUserPrompt(items);
 
   const response = await callWithRetry(

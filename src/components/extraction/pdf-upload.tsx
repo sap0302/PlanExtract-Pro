@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,6 +43,26 @@ export function PdfUpload() {
   const [provider, setProvider] = useState("");
   const [scale, setScale] = useState("");
   const [customScale, setCustomScale] = useState("");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Live elapsed timer during extraction
+  useEffect(() => {
+    if (processing) {
+      setElapsedSeconds(0);
+      timerRef.current = setInterval(() => {
+        setElapsedSeconds((prev) => prev + 1);
+      }, 1000);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [processing]);
 
   // Fetch PDF info when file is selected
   useEffect(() => {
@@ -162,20 +182,57 @@ export function PdfUpload() {
         formData.append("scale", effectiveScale);
       }
 
-      if (pdfInfo?.needsSplitting && !pageRanges.trim()) {
-        setStatus(
-          "Processing large plan... It will be split into chunks."
-        );
-      } else {
-        setStatus("Analyzing plan with AI... This may take 30-60 seconds.");
-      }
+      setStatus("Uploading plan to server...");
 
-      const res = await fetch("/api/extract", {
+      // Start extraction (non-blocking fetch with AbortController for cleanup)
+      const controller = new AbortController();
+      const extractPromise = fetch("/api/extract", {
         method: "POST",
         body: formData,
+        signal: controller.signal,
       });
 
+      // Poll for progress updates while extraction runs
+      let extractionId: string | null = null;
+      const pollProgress = async () => {
+        // Wait a moment for the extraction record to be created
+        await new Promise((r) => setTimeout(r, 2000));
+
+        // Get the extraction ID from the most recent processing extraction
+        try {
+          const listRes = await fetch("/api/extractions");
+          if (listRes.ok) {
+            const listData = await listRes.json();
+            const processing = listData.extractions?.find(
+              (e: { status: string }) => e.status === "processing"
+            );
+            if (processing) extractionId = processing.id;
+          }
+        } catch { /* ignore */ }
+
+        // Poll the extraction's summary for progress
+        while (extractionId) {
+          await new Promise((r) => setTimeout(r, 1500));
+          try {
+            const statusRes = await fetch(`/api/extractions/${extractionId}`);
+            if (statusRes.ok) {
+              const ext = await statusRes.json();
+              if (ext.status === "completed" || ext.status === "failed") break;
+              if (ext.summary) setStatus(ext.summary);
+            }
+          } catch { break; }
+        }
+      };
+
+      // Run polling in background
+      const pollPromise = pollProgress();
+
+      const res = await extractPromise;
       const data = await res.json();
+
+      // Stop polling
+      extractionId = null;
+      await pollPromise.catch(() => {});
 
       if (!res.ok) {
         throw new Error(data.error || "Extraction failed");
@@ -198,7 +255,7 @@ export function PdfUpload() {
         <CardTitle>Upload Construction Plan</CardTitle>
         <CardDescription>
           Upload a construction plan PDF. The AI will analyze it
-          and produce a PlanSwift-style quantity takeoff.
+          and produce a detailed quantity takeoff.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -445,7 +502,14 @@ export function PdfUpload() {
           {processing && (
             <div className="flex items-center gap-3 rounded-lg bg-muted p-4">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-              <span className="text-sm">{status}</span>
+              <div className="flex-1 min-w-0">
+                <span className="text-sm">{status}</span>
+              </div>
+              <span className="text-sm font-mono text-muted-foreground whitespace-nowrap">
+                {elapsedSeconds >= 60
+                  ? `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`
+                  : `${elapsedSeconds}s`}
+              </span>
             </div>
           )}
 

@@ -16,6 +16,8 @@ import { Separator } from "@/components/ui/separator";
 import { InventoryTabs } from "@/components/inventory/inventory-tabs";
 import { ExportButtons } from "@/components/export/export-buttons";
 import { DeleteButton } from "@/components/extraction/delete-button";
+import { ReExtractButton } from "@/components/extraction/re-extract-button";
+import { FinalizeButton } from "@/components/extraction/finalize-button";
 import { CompletenessAudit } from "@/components/extraction/completeness-audit";
 
 export default async function ExtractionDetailPage({
@@ -87,10 +89,18 @@ export default async function ExtractionDetailPage({
           </p>
         </div>
         <div className="flex gap-2">
+          <ReExtractButton extractionId={extraction.id} extractionName={extraction.name} />
           <Link href={`/extractions/${extraction.id}/measure`}>
             <Button variant="outline">Measure</Button>
           </Link>
           <ExportButtons extractionId={extraction.id} />
+          {extraction.status === "completed" && (
+            <FinalizeButton
+              extractionId={extraction.id}
+              finalized={extraction.finalized}
+              correctionCount={extraction.correctionCount}
+            />
+          )}
           <DeleteButton extractionId={extraction.id} />
         </div>
       </div>
