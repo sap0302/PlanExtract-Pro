@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import type { Point } from "@/lib/measurement-utils";
+import { decodeSnippetsFromUrl } from "@/lib/evidence-snippets";
 
 interface ExtractionData {
   id: string;
@@ -57,6 +58,14 @@ export default function MeasurePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const targetItemId = searchParams.get("item");
+  // "View on PDF" feature — inventory rows pass `?page=N&snippets=...` to jump
+  // straight to the right page with the AI's evidence text highlighted.
+  const initialPage = (() => {
+    const raw = searchParams.get("page");
+    const n = raw ? parseInt(raw, 10) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : 1;
+  })();
+  const initialSnippets = decodeSnippetsFromUrl(searchParams.get("snippets"));
   const canvasRef = useRef<MeasurementCanvasHandle>(null);
 
   const [extraction, setExtraction] = useState<ExtractionData | null>(null);
@@ -65,7 +74,11 @@ export default function MeasurePage() {
   const [loading, setLoading] = useState(true);
 
   // Viewer state
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(initialPage);
+  // Text-search highlights pulled from the URL (?snippets=...) — passed to
+  // PdfViewer which finds them on the current page via getTextContent and
+  // draws yellow boxes. Setting to [] hides all highlights.
+  const [textHighlights, setTextHighlights] = useState<string[]>(initialSnippets);
   const [zoom, setZoom] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [activeTool, setActiveTool] = useState<ToolMode>("select");
@@ -703,6 +716,7 @@ export default function MeasurePage() {
             onCanvasReady={handleCanvasReady}
             activeTool={activeTool}
             isSpaceDown={isSpaceDown}
+            textHighlights={textHighlights}
             renderOverlay={(w, h) => (
               <MeasurementCanvas
                 ref={canvasRef}
@@ -718,6 +732,7 @@ export default function MeasurePage() {
                 onMeasurementComplete={(type, points, page) => {
                   // Clear highlights when user starts measuring
                   if (highlights.length > 0) setHighlights([]);
+                  if (textHighlights.length > 0) setTextHighlights([]);
                   handleMeasurementComplete(type, points, page);
                 }}
                 onCalibrationComplete={handleCalibrationComplete}

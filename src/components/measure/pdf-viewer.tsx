@@ -30,6 +30,27 @@ interface PdfViewerProps {
   activeTool: string;
   isSpaceDown: boolean;
   renderOverlay?: (width: number, height: number) => React.ReactNode;
+  /**
+   * Optional list of text snippets to find and highlight on the rendered page.
+   * Used by the "View on PDF" feature — passes evidence excerpts from an Item
+   * (e.g. "STA 058.01", "INSTALL: 1 - 8X8 TEE") and the viewer draws yellow
+   * highlight boxes over matching text in the PDF text layer. Free + instant
+   * (no API call, no AI involvement). Matches are case-insensitive.
+   */
+  textHighlights?: string[];
+}
+
+/**
+ * A text-layer match resolved to base-viewport (scale=1) pixel coordinates.
+ * The viewer scales to current zoom in CSS so we don't need to recompute on
+ * zoom change.
+ */
+interface TextMatch {
+  x: number;       // top-left X in scale-1 pixels
+  y: number;       // top-left Y in scale-1 pixels (canvas coords, top-down)
+  width: number;
+  height: number;
+  text: string;    // matched span (for tooltip)
 }
 
 export function PdfViewer({
@@ -44,6 +65,7 @@ export function PdfViewer({
   activeTool,
   isSpaceDown,
   renderOverlay,
+  textHighlights,
 }: PdfViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -55,6 +77,8 @@ export function PdfViewer({
   const panStart = useRef({ x: 0, y: 0 });
   const [overlayDims, setOverlayDims] = useState({ width: 0, height: 0 });
   const [loadError, setLoadError] = useState<{ title: string; detail: string } | null>(null);
+  // Text-search highlights for the current page, in base (scale=1) viewport pixels.
+  const [textMatches, setTextMatches] = useState<TextMatch[]>([]);
 
   // Load PDF document (dynamic import to avoid SSR DOMMatrix error)
   useEffect(() => {
@@ -195,6 +219,76 @@ export function PdfViewer({
   useEffect(() => {
     setPageInput(String(currentPage));
   }, [currentPage]);
+
+  // Find textHighlights on the current page using pdfjs's text content API.
+  // Runs whenever the page or highlight tokens change. Output is cached in
+  // base-viewport (scale=1) pixel coords; CSS multiplies by current zoom so
+  // panning / zooming doesn't require re-querying pdfjs.
+  useEffect(() => {
+    let cancelled = false;
+    if (!pdfDoc) {
+      setTextMatches([]);
+      return;
+    }
+    if (!textHighlights || textHighlights.length === 0) {
+      setTextMatches([]);
+      return;
+    }
+
+    const findMatches = async () => {
+      try {
+        const page = await pdfDoc.getPage(currentPage);
+        const viewport = page.getViewport({ scale: 1 });
+        const content = await page.getTextContent();
+        if (cancelled) return;
+
+        const pdfjsLib = await getPdfjs();
+        const tokens = textHighlights
+          .map((t) => t.toLowerCase().trim())
+          .filter((t) => t.length >= 3);
+
+        const results: TextMatch[] = [];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        for (const item of content.items as any[]) {
+          if (!item || typeof item.str !== "string" || !item.str) continue;
+          const lower = item.str.toLowerCase();
+          // Match if the text item contains ANY token (case-insensitive
+          // substring match — engineers often have callouts split or padded,
+          // exact-equality would miss too much).
+          const hit = tokens.some((tok) => lower.includes(tok));
+          if (!hit) continue;
+
+          // Compose the item's PDF-space transform with the viewport transform
+          // to get viewport-space (canvas) pixel coordinates. tx[4] is left
+          // edge x, tx[5] is the BASELINE y (in viewport coords, top-down).
+          const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+          const fontHeight = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
+          const horizScale = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]);
+          const widthPx = (item.width || 0) * horizScale;
+          if (widthPx <= 0 || fontHeight <= 0) continue;
+
+          results.push({
+            x: tx[4],
+            y: tx[5] - fontHeight, // top edge = baseline minus font height
+            width: widthPx,
+            height: fontHeight,
+            text: item.str,
+          });
+          // Cap to keep render cheap for hyper-dense pages.
+          if (results.length >= 200) break;
+        }
+        if (!cancelled) setTextMatches(results);
+      } catch (err) {
+        console.warn("[pdf-viewer] text-highlight search failed:", err);
+        if (!cancelled) setTextMatches([]);
+      }
+    };
+
+    findMatches();
+    return () => {
+      cancelled = true;
+    };
+  }, [pdfDoc, currentPage, textHighlights]);
 
   // Track container size for overlay
   useEffect(() => {
@@ -363,6 +457,37 @@ export function PdfViewer({
           }}
         >
           <canvas ref={canvasRef} className="shadow-lg" />
+          {/* Text-search highlight boxes — sit OVER the canvas in the same
+              transform so they pan/zoom together. Each match was captured
+              in scale=1 viewport pixels; multiplied by current zoom here. */}
+          {textMatches.length > 0 && (
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                pointerEvents: "none",
+              }}
+            >
+              {textMatches.map((m, i) => (
+                <div
+                  key={i}
+                  title={m.text}
+                  style={{
+                    position: "absolute",
+                    left: m.x * zoom,
+                    top: m.y * zoom,
+                    width: m.width * zoom,
+                    height: m.height * zoom,
+                    backgroundColor: "rgba(255, 235, 0, 0.42)",
+                    boxShadow:
+                      "0 0 0 1.5px rgba(220, 150, 0, 0.85), 0 0 8px rgba(255, 220, 0, 0.5)",
+                    borderRadius: 1,
+                  }}
+                />
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Measurement overlay — rendered inside the same container as the PDF */}

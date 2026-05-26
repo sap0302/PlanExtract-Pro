@@ -17,6 +17,7 @@ import { DataTable } from "./data-table";
 import { ReferenceDiffDialog } from "./reference-diff-dialog";
 import { toast } from "sonner";
 import type { Item } from "@prisma/client";
+import { extractEvidenceSnippets, encodeSnippetsForUrl } from "@/lib/evidence-snippets";
 
 /** Isolated text input that manages its own local state to prevent focus loss on parent re-renders. */
 const EditableTextCell = React.memo(function EditableTextCell({
@@ -384,7 +385,7 @@ export function InventoryTabs({ items, extractionId }: InventoryTabsProps) {
     {
       id: "actions",
       header: "",
-      size: 110,
+      size: 140,
       cell: ({ row }) => {
         const item = row.original;
         const isEditing = editingId === item.id;
@@ -421,8 +422,41 @@ export function InventoryTabs({ items, extractionId }: InventoryTabsProps) {
 
         const isVerifying = verifyingId === item.id;
         const isManual = isManualRequired(item);
+        // "View on PDF" — opens the measure window jumped to the right page
+        // with the AI's evidence text highlighted. Only meaningful when we
+        // have a page reference AND something quoteable in evidence.
+        const sourcePagesArr: number[] = (() => {
+          if (!item.sourcePages) return [];
+          try {
+            const parsed = JSON.parse(item.sourcePages);
+            return Array.isArray(parsed) ? parsed.filter((n) => typeof n === "number" && n > 0) : [];
+          } catch {
+            return [];
+          }
+        })();
+        const viewSnippets = extractEvidenceSnippets(item.evidence);
+        const canViewOnPdf = sourcePagesArr.length > 0 && viewSnippets.length > 0;
         return (
           <div className="flex gap-1">
+            {canViewOnPdf && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => {
+                  const page = sourcePagesArr[0];
+                  const snippets = encodeSnippetsForUrl(viewSnippets);
+                  window.open(
+                    `/extractions/${extractionId}/measure?item=${item.id}&page=${page}&snippets=${snippets}`,
+                    "_blank"
+                  );
+                }}
+                className="text-blue-600 hover:text-blue-800 hover:bg-blue-50 px-1.5"
+                title={`View on PDF (page ${sourcePagesArr[0]}) — highlights AI's evidence quotes`}
+                aria-label="View on PDF"
+              >
+                🔍
+              </Button>
+            )}
             {isManual && (
               <Button
                 variant="ghost"
