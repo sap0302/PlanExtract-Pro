@@ -19,10 +19,12 @@ export interface AIAssistConfig {
   model?: string;
 }
 
-// Default to fast, cheap models for lightweight image analysis
+// Default to fast, cheap models for lightweight image analysis. Kept in
+// sync with the fallback model IDs in src/lib/providers/*.ts — a stale ID
+// here causes a silent API error (e.g. Auto-Scale detection failing).
 const DEFAULT_MODELS: Record<string, string> = {
-  anthropic: "claude-sonnet-4-6",
-  openai: "gpt-4o",
+  anthropic: process.env.CLAUDE_MODEL || "claude-opus-4-8",
+  openai: "gpt-5.4",
   gemini: "gemini-2.5-flash",
 };
 

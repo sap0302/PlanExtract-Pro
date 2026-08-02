@@ -91,7 +91,7 @@ export default async function ExtractionDetailPage({
         <div className="flex gap-2">
           <ReExtractButton extractionId={extraction.id} extractionName={extraction.name} />
           <Link href={`/extractions/${extraction.id}/measure`}>
-            <Button variant="outline">Measure</Button>
+            <Button variant="outline">Manually</Button>
           </Link>
           <ExportButtons extractionId={extraction.id} />
           {extraction.status === "completed" && (

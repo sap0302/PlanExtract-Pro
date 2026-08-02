@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { requireOwnedItem } from "@/lib/api-auth";
 import { z } from "zod";
 
 export async function GET(
@@ -8,31 +8,12 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     const { id } = await params;
 
-    const item = await prisma.item.findUnique({
-      where: { id },
-      include: {
-        extraction: {
-          select: { userId: true },
-        },
-      },
-    });
+    const result = await requireOwnedItem(id);
+    if (!result.ok) return result.response;
 
-    if (!item) {
-      return NextResponse.json({ error: "Item not found" }, { status: 404 });
-    }
-
-    if (item.extraction.userId !== session.user.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
-    }
-
-    return NextResponse.json(item);
+    return NextResponse.json(result.record);
   } catch (error) {
     console.error("Item GET error:", error);
     return NextResponse.json(
@@ -72,30 +53,11 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     const { id } = await params;
 
-    // Verify item exists and belongs to this user (via extraction)
-    const item = await prisma.item.findUnique({
-      where: { id },
-      include: {
-        extraction: {
-          select: { userId: true },
-        },
-      },
-    });
-
-    if (!item) {
-      return NextResponse.json({ error: "Item not found" }, { status: 404 });
-    }
-
-    if (item.extraction.userId !== session.user.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
-    }
+    const result = await requireOwnedItem(id);
+    if (!result.ok) return result.response;
+    const { record: item, session } = result;
 
     const body = await req.json();
     const parsed = updateItemSchema.safeParse(body);
@@ -213,30 +175,11 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     const { id } = await params;
 
-    // Verify item exists and belongs to this user (via extraction)
-    const item = await prisma.item.findUnique({
-      where: { id },
-      include: {
-        extraction: {
-          select: { userId: true },
-        },
-      },
-    });
-
-    if (!item) {
-      return NextResponse.json({ error: "Item not found" }, { status: 404 });
-    }
-
-    if (item.extraction.userId !== session.user.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
-    }
+    const result = await requireOwnedItem(id);
+    if (!result.ok) return result.response;
+    const { record: item, session } = result;
 
     // ── Learning system: record deletion as correction ──
     // Parse optional reason from request body
@@ -276,13 +219,21 @@ export async function DELETE(
           where: { id: item.extractionId },
           data: { correctionCount: { increment: 1 } },
         });
+        // The Item↔Measurement relation is onDelete: SetNull — deleting the
+        // item alone would just unlink it, leaving the drawn shape sitting
+        // on the plan. Delete its linked measurement(s) too so removing an
+        // item actually removes what it was measured from.
+        await tx.measurement.deleteMany({ where: { itemId: id } });
         await tx.item.delete({ where: { id } });
       });
       console.log(
         `[learning] Deleted AI item: "${item.name}" (reason: ${correctionType})`
       );
     } else {
-      await prisma.item.delete({ where: { id } });
+      await prisma.$transaction(async (tx) => {
+        await tx.measurement.deleteMany({ where: { itemId: id } });
+        await tx.item.delete({ where: { id } });
+      });
     }
 
     return NextResponse.json({ success: true });

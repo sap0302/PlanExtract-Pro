@@ -53,8 +53,9 @@ model Extraction {
 
   // PDF viewer & measurement
   pdfData               Bytes?   // Raw PDF binary for interactive viewer
-  scalePixelsPerFoot    Float?   // Computed scale ratio (pixels per foot at render resolution)
+  scalePixelsPerFoot    Float?   // Global scale ratio, used when "Apply Scale to all pages" was checked, or as a fallback for pages with no per-page override
   scaleCalibrationJson  String?  // JSON: { page, points, distanceFt, pdfWidth, pdfHeight }
+  scalePerPageJson      String?  // JSON: { [page]: pixelsPerFoot } — set when a page is calibrated without "Apply Scale to all pages"; overrides scalePixelsPerFoot for that page
 
   durationMs   Int?     // Total extraction time in milliseconds (start to completion/failure)
 
@@ -127,6 +128,7 @@ model Measurement {
   valueFt      Float?     // Computed length (FT) or area (SQ FT)
   valueCount   Int?       // Count value (always 1 per marker)
   color        String     @default("#FF0000")
+  shape        String?    // Count-tool marker shape: "circle" | "square" | "triangle" | "cross" — set via the "Properties - [New Count]" dialog, ignored for linear/area
   extractionId String
   extraction   Extraction @relation(fields: [extractionId], references: [id], onDelete: Cascade)
   itemId       String?

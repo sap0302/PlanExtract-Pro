@@ -188,7 +188,7 @@ export class AnthropicProvider implements AIProvider {
       timeout: 20 * 60 * 1000, // 20 minutes — large PDFs can take >10min per chunk
     });
     this.model =
-      config.model || process.env.CLAUDE_MODEL || "claude-opus-4-6";
+      config.model || process.env.CLAUDE_MODEL || "claude-opus-4-8";
   }
 
   /**
@@ -314,7 +314,6 @@ export class AnthropicProvider implements AIProvider {
         this.client.messages.create({
           model: this.model,
           max_tokens: 32768,
-          temperature: 0.1,
           // Cached system + combined tools: verification pass can hit this prefix.
           system: CACHED_SYSTEM_PARAM,
           tools: [...COMBINED_TOOLS],
@@ -348,7 +347,6 @@ export class AnthropicProvider implements AIProvider {
         this.client.messages.create({
           model: this.model,
           max_tokens: 8192,
-          temperature: 0.1,
           // Same system + tools as extractFromPDF so this call hits the
           // extraction pass's cached [tools + system + images] prefix.
           system: CACHED_SYSTEM_PARAM,
@@ -406,7 +404,6 @@ export class AnthropicProvider implements AIProvider {
         this.client.messages.create({
           model: this.model,
           max_tokens: 8192,
-          temperature: 0.1,
           // Same cached system + tools as extractFromPDF / verifyExtraction
           // so this call hits the cached [tools + system + images] prefix
           // within the 5-minute ephemeral window.
@@ -513,7 +510,6 @@ Read EVERY callout on the page. Small text in callout boxes is your primary targ
         this.client.messages.create({
           model: this.model,
           max_tokens: 8192,
-          temperature: 0.1,
           system: CACHED_SYSTEM_PARAM,
           tools: [...COMBINED_TOOLS],
           tool_choice: {

@@ -1,26 +1,15 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { requireOwnedMeasurement } from "@/lib/api-auth";
 
 export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   const { id } = await params;
 
-  const measurement = await prisma.measurement.findUnique({
-    where: { id },
-    include: { extraction: { select: { userId: true } } },
-  });
-
-  if (!measurement || measurement.extraction.userId !== session.user.id) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  const result = await requireOwnedMeasurement(id);
+  if (!result.ok) return result.response;
 
   const body = await req.json();
   const { label, color, itemId } = body;
@@ -41,21 +30,10 @@ export async function DELETE(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   const { id } = await params;
 
-  const measurement = await prisma.measurement.findUnique({
-    where: { id },
-    include: { extraction: { select: { userId: true } } },
-  });
-
-  if (!measurement || measurement.extraction.userId !== session.user.id) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  const result = await requireOwnedMeasurement(id);
+  if (!result.ok) return result.response;
 
   await prisma.measurement.delete({ where: { id } });
 

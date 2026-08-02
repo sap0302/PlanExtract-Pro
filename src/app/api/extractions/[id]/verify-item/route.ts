@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { decrypt } from "@/lib/encryption";
 import { AnthropicProvider } from "@/lib/providers/anthropic";
 import { applyVerificationCorrections, applyNameCorrections } from "@/lib/providers/verification-utils";
 import type { ExtractedItem } from "@/lib/providers/types";
+import { requireOwnedExtraction } from "@/lib/api-auth";
 
 /**
  * POST /api/extractions/[id]/verify-item
@@ -24,11 +24,6 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   const { id } = await params;
   let itemId: string;
   try {
@@ -48,25 +43,19 @@ export async function POST(
   }
 
   // Fetch the extraction with the user's API key and the target item
-  const extraction = await prisma.extraction.findUnique({
-    where: { id },
-    select: {
-      pdfData: true,
-      userId: true,
-      fileName: true,
-      provider: true,
-      user: {
-        select: {
-          anthropicKeyEnc: true,
-          customInstructions: true,
-        },
+  const result = await requireOwnedExtraction(id, {
+    pdfData: true,
+    fileName: true,
+    provider: true,
+    user: {
+      select: {
+        anthropicKeyEnc: true,
+        customInstructions: true,
       },
     },
   });
-
-  if (!extraction || extraction.userId !== session.user.id) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  if (!result.ok) return result.response;
+  const { record: extraction } = result;
 
   if (!extraction.pdfData) {
     return NextResponse.json(

@@ -20,17 +20,6 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-echo [1/5] Node.js found:
-node --version
-echo.
-:: Check Node.js version is 18-22 (LTS)
-node -e "const v=parseInt(process.version.slice(1));if(v<18||v>22){console.log('WARNING: Node.js '+process.version+' detected. Please install Node.js 20 LTS from https://nodejs.org');console.log('Versions 18-22 are supported. Version '+process.version+' may cause errors.');process.exit(1)}"
-if %ERRORLEVEL% neq 0 (
-    pause
-    exit /b 1
-)
-echo.
-
 :: Generate .env file with fresh secrets
 echo [2/5] Generating configuration...
 if exist .env (

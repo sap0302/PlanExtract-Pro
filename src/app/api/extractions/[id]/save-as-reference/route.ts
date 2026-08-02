@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { generateReferenceText, inferProjectType } from "@/lib/reference-generator";
+import { requireOwnedExtraction } from "@/lib/api-auth";
 
 const MAX_REFERENCES = 20;
 
@@ -10,33 +10,21 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     const { id } = await params;
 
-    const extraction = await prisma.extraction.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        userId: true,
-        name: true,
-        finalized: true,
-        items: true,
-        // Pull linked measurements so the reference generator can flag
-        // estimator-traced items with [VERIFIED BY MANUAL TRACE]. Only
-        // measurements with an itemId are useful — unlinked traces are
-        // exploratory marks the estimator made but didn't tie to a takeoff
-        // line, so they're excluded.
-        measurements: { where: { itemId: { not: null } } },
-      },
+    const result = await requireOwnedExtraction(id, {
+      name: true,
+      finalized: true,
+      items: true,
+      // Pull linked measurements so the reference generator can flag
+      // estimator-traced items with [VERIFIED BY MANUAL TRACE]. Only
+      // measurements with an itemId are useful — unlinked traces are
+      // exploratory marks the estimator made but didn't tie to a takeoff
+      // line, so they're excluded.
+      measurements: { where: { itemId: { not: null } } },
     });
-
-    if (!extraction || extraction.userId !== session.user.id) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
-    }
+    if (!result.ok) return result.response;
+    const { record: extraction, session } = result;
 
     if (!extraction.finalized) {
       return NextResponse.json(

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
+import { requireOwnedExtraction } from "@/lib/api-auth";
 
 const UNIT_MAP: Record<string, string> = {
   area: "SQ FT",
@@ -22,6 +22,7 @@ const createItemSchema = z.object({
   description: z.string().max(500).nullable().optional(),
   // Audit & traceability fields
   sourceSheetId: z.string().max(50).nullable().optional(),
+  sourcePages: z.string().nullable().optional(),
   quantityMethod: z.enum(["station_math", "callout", "schedule", "count", "scale_estimate"]).nullable().optional(),
   isDemo: z.boolean().optional().default(false),
   folderPath: z.string().max(100).nullable().optional(),
@@ -29,11 +30,6 @@ const createItemSchema = z.object({
 
 export async function POST(req: Request) {
   try {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     const body = await req.json();
     const parsed = createItemSchema.safeParse(body);
 
@@ -44,25 +40,21 @@ export async function POST(req: Request) {
       );
     }
 
-    const { extractionId, measurementType, name, system, quantity, description } =
-      parsed.data;
+    const {
+      extractionId,
+      measurementType,
+      name,
+      system,
+      quantity,
+      description,
+      sourceSheetId,
+      sourcePages,
+      quantityMethod,
+    } = parsed.data;
 
     // Verify extraction exists and belongs to this user
-    const extraction = await prisma.extraction.findUnique({
-      where: { id: extractionId },
-      select: { userId: true },
-    });
-
-    if (!extraction) {
-      return NextResponse.json(
-        { error: "Extraction not found" },
-        { status: 404 }
-      );
-    }
-
-    if (extraction.userId !== session.user.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
-    }
+    const extractionResult = await requireOwnedExtraction(extractionId, {});
+    if (!extractionResult.ok) return extractionResult.response;
 
     // Get the next sortOrder
     const maxSortOrder = await prisma.item.aggregate({
@@ -89,6 +81,9 @@ export async function POST(req: Request) {
         priceTotal: 0,
         sortOrder: nextSortOrder,
         extractionId,
+        sourceSheetId: sourceSheetId || null,
+        sourcePages: sourcePages || null,
+        quantityMethod: quantityMethod || null,
       },
     });
 

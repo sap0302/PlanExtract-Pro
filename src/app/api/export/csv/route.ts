@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { generateInventoryCSV } from "@/lib/export-csv";
+import { requireSession } from "@/lib/api-auth";
 
 export async function POST(req: Request) {
   try {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const sessionResult = await requireSession();
+    if (!sessionResult.ok) return sessionResult.response;
 
     const { extractionId } = await req.json();
 
@@ -20,7 +18,7 @@ export async function POST(req: Request) {
       },
     });
 
-    if (!extraction || extraction.userId !== session.user.id) {
+    if (!extraction || extraction.userId !== sessionResult.session.user.id) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 

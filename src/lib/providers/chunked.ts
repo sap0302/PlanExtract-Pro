@@ -1623,10 +1623,30 @@ function isRateLimitOrOverloadError(error: unknown): boolean {
  * Process multiple PDF chunks through a provider and merge results.
  * Provider-agnostic version of the chunked extraction logic.
  */
+/**
+ * The AI only ever sees a chunk's own sub-PDF, so any `sourcePages` it
+ * reports are necessarily 1-indexed *within that chunk* — it has no way to
+ * know which absolute page of the original document its chunk started at.
+ * Without this correction, every chunk past the first reports page numbers
+ * that collide with page 1, 2, 3... of the real PDF (e.g. an item actually
+ * on absolute page 9 gets recorded as page 3, because it was the 3rd page
+ * of its chunk) — breaking "View on PDF" and any other feature that
+ * navigates by sourcePages for chunked (large) extractions.
+ */
+function offsetSourcePages(items: ExtractedItem[], chunkStartPage: number): ExtractedItem[] {
+  if (chunkStartPage <= 1 || !items.length) return items;
+  return items.map((item) =>
+    item.sourcePages?.length
+      ? { ...item, sourcePages: item.sourcePages.map((p) => p + chunkStartPage - 1) }
+      : item
+  );
+}
+
 export async function extractFromPDFChunked(
   provider: AIProvider,
   pdfChunks: string[],
   chunkLabels: string[],
+  chunkStartPages: number[],
   onProgress?: (
     chunkIndex: number,
     totalChunks: number,
@@ -1923,7 +1943,7 @@ export async function extractFromPDFChunked(
     if (r.failed && r.failedLabel) failedChunks.push(r.failedLabel);
     else {
       if (r.summary) summaries.push(r.summary);
-      allItems.push(...r.items);
+      allItems.push(...offsetSourcePages(r.items, chunkStartPages[0] ?? 1));
     }
   } else {
     console.log(
@@ -1935,11 +1955,13 @@ export async function extractFromPDFChunked(
       for (let i = waveStart; i < waveEnd; i++) indices.push(i);
 
       const waveResults = await Promise.all(indices.map((i) => processChunk(i)));
-      for (const r of waveResults) {
+      for (let w = 0; w < waveResults.length; w++) {
+        const r = waveResults[w];
+        const chunkIndex = indices[w];
         if (r.failed && r.failedLabel) failedChunks.push(r.failedLabel);
         else {
           if (r.summary) summaries.push(r.summary);
-          allItems.push(...r.items);
+          allItems.push(...offsetSourcePages(r.items, chunkStartPages[chunkIndex] ?? 1));
         }
       }
     }

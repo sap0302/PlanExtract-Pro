@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
 import {
   parsePlanSwiftReference,
   diffExtractionAgainstReference,
 } from "@/lib/planswift-csv";
+import { requireOwnedExtraction } from "@/lib/api-auth";
 
 /**
  * POST /api/extractions/[id]/compare
@@ -29,25 +28,11 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   const { id } = await params;
 
-  // Check extraction ownership
-  const extraction = await prisma.extraction.findUnique({
-    where: { id },
-    select: {
-      userId: true,
-      name: true,
-      items: true,
-    },
-  });
-  if (!extraction || extraction.userId !== session.user.id) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  const result0 = await requireOwnedExtraction(id, { name: true, items: true });
+  if (!result0.ok) return result0.response;
+  const { record: extraction } = result0;
 
   // Parse the reference — support both multipart upload and JSON text
   let referenceText = "";

@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { requireOwnedExtraction, requireSession } from "@/lib/api-auth";
 
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  // Fetched with `omit`+`include` (full record minus pdfData, plus items) —
+  // a third Prisma query shape the shared requireOwnedExtraction() helper
+  // doesn't cover (it only handles `select`), so the ownership check stays
+  // inline here rather than forcing this one call site into that generic.
+  const sessionResult = await requireSession();
+  if (!sessionResult.ok) return sessionResult.response;
 
   const { id } = await params;
 
@@ -21,12 +23,8 @@ export async function GET(
     },
   });
 
-  if (!extraction) {
+  if (!extraction || extraction.userId !== sessionResult.session.user.id) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-
-  if (extraction.userId !== session.user.id) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   return NextResponse.json(extraction);
@@ -36,25 +34,10 @@ export async function DELETE(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   const { id } = await params;
 
-  const extraction = await prisma.extraction.findUnique({
-    where: { id },
-    select: { id: true, userId: true },
-  });
-
-  if (!extraction) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-
-  if (extraction.userId !== session.user.id) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const result = await requireOwnedExtraction(id, {});
+  if (!result.ok) return result.response;
 
   await prisma.extraction.delete({
     where: { id },

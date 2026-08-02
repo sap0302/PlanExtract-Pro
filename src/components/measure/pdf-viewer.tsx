@@ -27,9 +27,13 @@ interface PdfViewerProps {
   panOffset: { x: number; y: number };
   onPanOffsetChange: (offset: { x: number; y: number }) => void;
   onCanvasReady?: (canvas: HTMLCanvasElement, pdfWidth: number, pdfHeight: number) => void;
+  /** Reports the PDF's true page count once loaded client-side (authoritative — DB's cached pageCount may be null/stale). */
+  onPageCountReady?: (pageCount: number) => void;
   activeTool: string;
   isSpaceDown: boolean;
   renderOverlay?: (width: number, height: number) => React.ReactNode;
+  /** Hide the viewer's own page/zoom nav bar (used when a parent ribbon toolbar provides it). */
+  hideNavBar?: boolean;
   /**
    * Optional list of text snippets to find and highlight on the rendered page.
    * Used by the "View on PDF" feature — passes evidence excerpts from an Item
@@ -62,10 +66,12 @@ export function PdfViewer({
   panOffset,
   onPanOffsetChange,
   onCanvasReady,
+  onPageCountReady,
   activeTool,
   isSpaceDown,
   renderOverlay,
   textHighlights,
+  hideNavBar,
 }: PdfViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -79,6 +85,14 @@ export function PdfViewer({
   const [loadError, setLoadError] = useState<{ title: string; detail: string } | null>(null);
   // Text-search highlights for the current page, in base (scale=1) viewport pixels.
   const [textMatches, setTextMatches] = useState<TextMatch[]>([]);
+  // The PDF page's size at scale=1. The canvas's CSS *display* size is always
+  // basePdfSize * zoom (computed declaratively below, in lockstep with React's
+  // render — no race possible). Its raster *resolution* (canvas.width/height
+  // attribute) is separately set to basePdfSize * renderZoom, only when the
+  // debounced re-render actually runs. Keeping "how big it looks" and "how
+  // sharp it is" fully decoupled is what stops zoom from ever visibly
+  // jumping: display size never depends on whether the raster has caught up.
+  const [basePdfSize, setBasePdfSize] = useState({ width: 0, height: 0 });
 
   // Load PDF document (dynamic import to avoid SSR DOMMatrix error)
   useEffect(() => {
@@ -145,6 +159,7 @@ export function PdfViewer({
         if (!cancelled) {
           setPdfDoc(doc);
           setPageCount(doc.numPages);
+          onPageCountReady?.(doc.numPages);
         }
       } catch (err) {
         console.error("Failed to load PDF:", err);
@@ -163,8 +178,51 @@ export function PdfViewer({
     };
   }, [pdfUrl]);
 
+  // The zoom actually baked into the canvas's raster pixels. `zoom` itself
+  // updates on every wheel tick for instant visual feedback (applied as a CSS
+  // scale on the canvas, see the wrapper div below); `renderZoom` only catches
+  // up after scrolling settles, so pdfjs's expensive page.render() doesn't run
+  // on every tick (which was the cause of the "shaking" — a blank canvas +
+  // cancelled render on every single wheel event while scrolling fast).
+  const [renderZoom, setRenderZoom] = useState(zoom);
+  const zoomDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (zoomDebounceRef.current) clearTimeout(zoomDebounceRef.current);
+    zoomDebounceRef.current = setTimeout(() => setRenderZoom(zoom), 150);
+    return () => {
+      if (zoomDebounceRef.current) clearTimeout(zoomDebounceRef.current);
+    };
+  }, [zoom]);
+
   // Track active render task so we can cancel it on re-render
   const renderTaskRef = useRef<any | null>(null);
+  // Off-screen scratch canvas pdfjs renders into. Resizing the VISIBLE canvas
+  // (`canvas.width = ...`) clears it to blank immediately, and the actual
+  // page.render() is async — rendering straight into the visible canvas means
+  // it sits blank for the render's duration on every zoom/page change, which
+  // reads as a flash/shake. Rendering into this hidden canvas instead, then
+  // copying the finished pixels into the visible one with a single
+  // resize+drawImage (synchronous, no `await` in between), means the browser
+  // never has a chance to paint an intermediate blank frame.
+  const bufferCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  if (!bufferCanvasRef.current && typeof document !== "undefined") {
+    bufferCanvasRef.current = document.createElement("canvas");
+  }
+
+  // Latest panOffset / onPanOffsetChange / clamp fn, read inside the page-render
+  // effect without adding them as deps (which would re-trigger PDF re-render).
+  const panOffsetRef = useRef(panOffset);
+  const onPanOffsetChangeRef = useRef(onPanOffsetChange);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const clampPanOffsetRef = useRef<(offset: { x: number; y: number }) => { x: number; y: number }>(
+    (offset) => offset
+  );
+  useEffect(() => {
+    panOffsetRef.current = panOffset;
+  }, [panOffset]);
+  useEffect(() => {
+    onPanOffsetChangeRef.current = onPanOffsetChange;
+  }, [onPanOffsetChange]);
 
   // Render current page
   useEffect(() => {
@@ -180,22 +238,39 @@ export function PdfViewer({
       setRendering(true);
       try {
         const page = await pdfDoc.getPage(currentPage);
-        const viewport = page.getViewport({ scale: zoom });
-        const canvas = canvasRef.current!;
-        const ctx = canvas.getContext("2d")!;
+        const viewport = page.getViewport({ scale: renderZoom });
+        const buffer = bufferCanvasRef.current!;
+        const bufferCtx = buffer.getContext("2d")!;
 
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
+        buffer.width = viewport.width;
+        buffer.height = viewport.height;
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const task = page.render({ canvasContext: ctx, viewport } as any);
+        const task = page.render({ canvasContext: bufferCtx, viewport } as any);
         renderTaskRef.current = task;
         await task.promise;
         renderTaskRef.current = null;
+        if (cancelled) return;
 
-        if (!cancelled && onCanvasReady) {
+        // Copy the finished render into the visible canvas in one
+        // synchronous resize+draw — no blank frame in between.
+        const canvas = canvasRef.current!;
+        const ctx = canvas.getContext("2d")!;
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        ctx.drawImage(buffer, 0, 0);
+
+        // Re-clamp pan immediately — a zoom-out or page change can leave the
+        // previous pan offset pointing past the (now smaller) page's edge.
+        const clamped = clampPanOffsetRef.current(panOffsetRef.current);
+        if (clamped.x !== panOffsetRef.current.x || clamped.y !== panOffsetRef.current.y) {
+          onPanOffsetChangeRef.current(clamped);
+        }
+
+        if (!cancelled) {
           const baseViewport = page.getViewport({ scale: 1 });
-          onCanvasReady(canvas, baseViewport.width, baseViewport.height);
+          setBasePdfSize({ width: baseViewport.width, height: baseViewport.height });
+          onCanvasReady?.(canvas, baseViewport.width, baseViewport.height);
         }
       } catch (err) {
         // Check for cancelled render (name-based check since pdfjsLib may not be loaded)
@@ -214,7 +289,7 @@ export function PdfViewer({
         renderTaskRef.current = null;
       }
     };
-  }, [pdfDoc, currentPage, zoom, onCanvasReady]);
+  }, [pdfDoc, currentPage, renderZoom, onCanvasReady]);
 
   useEffect(() => {
     setPageInput(String(currentPage));
@@ -255,8 +330,17 @@ export function PdfViewer({
           // Match if the text item contains ANY token (case-insensitive
           // substring match — engineers often have callouts split or padded,
           // exact-equality would miss too much).
-          const hit = tokens.some((tok) => lower.includes(tok));
-          if (!hit) continue;
+          let matchStart = -1;
+          let matchLen = 0;
+          for (const tok of tokens) {
+            const idx = lower.indexOf(tok);
+            if (idx !== -1) {
+              matchStart = idx;
+              matchLen = tok.length;
+              break;
+            }
+          }
+          if (matchStart === -1) continue;
 
           // Compose the item's PDF-space transform with the viewport transform
           // to get viewport-space (canvas) pixel coordinates. tx[4] is left
@@ -264,13 +348,24 @@ export function PdfViewer({
           const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
           const fontHeight = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
           const horizScale = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]);
-          const widthPx = (item.width || 0) * horizScale;
-          if (widthPx <= 0 || fontHeight <= 0) continue;
+          const fullWidthPx = (item.width || 0) * horizScale;
+          if (fullWidthPx <= 0 || fontHeight <= 0) continue;
+
+          // Some PDFs encode a whole callout/leader-line label as ONE text
+          // item — highlighting that item's full width for a short substring
+          // match would cover unrelated neighboring text on the same line
+          // (exactly what showed up as an oversized yellow box spanning past
+          // the actual label). Narrow to a sub-rectangle proportional to
+          // where the match falls within the string (assumes roughly even
+          // character width — not exact, but far tighter than the full run).
+          const strLen = item.str.length || 1;
+          const subX = (matchStart / strLen) * fullWidthPx;
+          const subWidth = Math.max((matchLen / strLen) * fullWidthPx, fontHeight);
 
           results.push({
-            x: tx[4],
+            x: tx[4] + subX,
             y: tx[5] - fontHeight, // top edge = baseline minus font height
-            width: widthPx,
+            width: subWidth,
             height: fontHeight,
             text: item.str,
           });
@@ -311,6 +406,40 @@ export function PdfViewer({
   // holding space
   const canPan = activeTool === "select" || isSpaceDown;
 
+  // Keep the rendered page from being dragged past its own edges — clamps
+  // panOffset so the page (canvas.width/height, which already includes the
+  // current zoom) can never leave a gap of empty gray space on a side where
+  // the page is larger than the visible container. When the page is smaller
+  // than the container on an axis, it clamps to keep the page from being
+  // pushed out further than centered.
+  const clampPanOffset = useCallback(
+    (offset: { x: number; y: number }) => {
+      const containerW = overlayDims.width;
+      const containerH = overlayDims.height;
+      if (containerW === 0 || containerH === 0) return offset;
+      // The canvas's CSS display size is always basePdfSize * zoom (see the
+      // canvas's inline style below) — independent of its raster resolution.
+      const contentW = basePdfSize.width * zoom;
+      const contentH = basePdfSize.height * zoom;
+      if (contentW === 0 || contentH === 0) return offset;
+
+      const clampAxis = (value: number, containerSize: number, contentSize: number) => {
+        const lo = Math.min(0, containerSize - contentSize);
+        const hi = Math.max(0, containerSize - contentSize);
+        return Math.min(hi, Math.max(lo, value));
+      };
+
+      return {
+        x: clampAxis(offset.x, containerW, contentW),
+        y: clampAxis(offset.y, containerH, contentH),
+      };
+    },
+    [overlayDims, zoom, basePdfSize]
+  );
+  useEffect(() => {
+    clampPanOffsetRef.current = clampPanOffset;
+  }, [clampPanOffset]);
+
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       // Right mouse (button 2) or middle mouse (button 1) → always pan
@@ -327,13 +456,15 @@ export function PdfViewer({
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
       if (isPanning.current) {
-        onPanOffsetChange({
-          x: e.clientX - panStart.current.x,
-          y: e.clientY - panStart.current.y,
-        });
+        onPanOffsetChange(
+          clampPanOffset({
+            x: e.clientX - panStart.current.x,
+            y: e.clientY - panStart.current.y,
+          })
+        );
       }
     },
-    [onPanOffsetChange]
+    [onPanOffsetChange, clampPanOffset]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -345,7 +476,10 @@ export function PdfViewer({
     (e: React.WheelEvent) => {
       e.preventDefault();
       const delta = e.deltaY > 0 ? -0.05 : 0.05; // 5% increments for smooth zoom
-      const newZoom = Math.max(0.1, Math.min(10, zoom + delta));
+      // Never let the page's rendered height shrink smaller than the visible
+      // viewport height — no gray space above/below the page.
+      const minZoom = basePdfSize.height > 0 ? Math.max(0.1, overlayDims.height / basePdfSize.height) : 0.1;
+      const newZoom = Math.max(minZoom, Math.min(10, zoom + delta));
       if (newZoom === zoom) return;
 
       // Zoom centered on cursor position
@@ -359,11 +493,11 @@ export function PdfViewer({
         // New pan so that same PDF point stays under cursor
         const newPanX = cursorX - pdfX * newZoom;
         const newPanY = cursorY - pdfY * newZoom;
-        onPanOffsetChange({ x: newPanX, y: newPanY });
+        onPanOffsetChange(clampPanOffset({ x: newPanX, y: newPanY }));
       }
       onZoomChange(newZoom);
     },
-    [zoom, onZoomChange, panOffset, onPanOffsetChange]
+    [zoom, onZoomChange, panOffset, onPanOffsetChange, clampPanOffset, basePdfSize, overlayDims]
   );
 
   const handlePageInputSubmit = () => {
@@ -375,14 +509,16 @@ export function PdfViewer({
     }
   };
 
-  // Cursor: grab when panning is available, crosshair when measuring
+  // Cursor: grab when panning is available; hidden while measuring since the
+  // Konva overlay draws its own crosshair guide lines.
   const cursorClass = canPan
     ? "cursor-grab active:cursor-grabbing"
-    : "cursor-crosshair";
+    : "cursor-none";
 
   return (
     <div className="flex flex-col h-full">
       {/* Page navigation bar */}
+      {!hideNavBar && (
       <div className="flex items-center gap-2 px-3 py-2 border-b bg-muted/30 shrink-0 relative z-10">
         <Button
           variant="outline"
@@ -428,6 +564,7 @@ export function PdfViewer({
           <span className="text-xs text-muted-foreground animate-pulse">Rendering...</span>
         )}
       </div>
+      )}
 
       {/* PDF canvas with pan/zoom */}
       <div
@@ -448,18 +585,45 @@ export function PdfViewer({
             </div>
           </div>
         ) : null}
+        {/* Loading overlay — covers the canvas while the PDF document itself
+            is still loading/parsing (!pdfDoc), or while a page render is in
+            flight (`rendering`). Previously this only showed as a small
+            "Rendering..." text in the nav bar, which is hidden entirely when
+            hideNavBar is set (as the measure page does), so large/slow PDFs
+            just showed a blank gray box with no feedback. */}
+        {!loadError && (!pdfDoc || (rendering && basePdfSize.width === 0)) && (
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-200/80 z-30">
+            <div className="flex flex-col items-center gap-2 text-muted-foreground">
+              <span className="h-8 w-8 animate-spin rounded-full border-2 border-current border-t-transparent" />
+              <span className="text-sm font-medium">
+                {!pdfDoc ? "Loading PDF…" : "Rendering page…"}
+              </span>
+            </div>
+          </div>
+        )}
         <div
           style={{
+            // Only translate here — the canvas's own CSS width/height below
+            // (basePdfSize * live zoom) handles zoom, so there's no separate
+            // scale factor here that could ever desync from the raster.
             transform: `translate(${panOffset.x}px, ${panOffset.y}px)`,
             position: "absolute",
             top: 0,
             left: 0,
           }}
         >
-          <canvas ref={canvasRef} className="shadow-lg" />
+          <canvas
+            ref={canvasRef}
+            className="shadow-lg"
+            style={
+              basePdfSize.width > 0
+                ? { width: basePdfSize.width * zoom, height: basePdfSize.height * zoom }
+                : undefined
+            }
+          />
           {/* Text-search highlight boxes — sit OVER the canvas in the same
-              transform so they pan/zoom together. Each match was captured
-              in scale=1 viewport pixels; multiplied by current zoom here. */}
+              (translate-only) wrapper, positioned in live-zoom space to match
+              the canvas's own CSS display size above. */}
           {textMatches.length > 0 && (
             <div
               style={{

@@ -241,6 +241,76 @@ export async function renderPdfToImages(
 }
 
 /**
+ * Render a single PDF page to a TIFF buffer via pdfjs-dist + @napi-rs/canvas,
+ * converted from PNG using sharp (canvas has no native TIFF encoder).
+ *
+ * Used for the "sheet list" in the measurement tool, which mirrors PlanSwift's
+ * convention of digitizing each plan sheet as its own TIF file.
+ *
+ * @param pdfBuffer Raw PDF bytes
+ * @param pageNumber 1-indexed page to render
+ * @param scale Render scale (default 2.0 = ~144 DPI, enough for on-screen thumbnails)
+ */
+export async function renderPdfPageToTiff(
+  pdfBuffer: Buffer | Uint8Array,
+  pageNumber: number,
+  scale: number = 2.0,
+  /** "tiff" for the real converted file, "png" for a browser-displayable preview (TIFF has no native <img> support) */
+  format: "tiff" | "png" = "tiff"
+): Promise<Buffer> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // @ts-expect-error — pdf.worker.mjs ships no .d.mts declarations
+  const pdfjsWorker: any = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+  const { createCanvas } = await import("@napi-rs/canvas");
+  const sharp = (await import("sharp")).default;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).pdfjsWorker = pdfjsWorker;
+  pdfjs.GlobalWorkerOptions.workerSrc = "pdf.worker.mjs";
+
+  const data = Uint8Array.from(pdfBuffer);
+  const loadingTask = pdfjs.getDocument({
+    data,
+    isEvalSupported: false,
+    useWorkerFetch: false,
+    disableFontFace: true,
+  });
+  const document = await loadingTask.promise;
+
+  if (pageNumber < 1 || pageNumber > document.numPages) {
+    await document.destroy();
+    throw new Error(`Page ${pageNumber} out of range (1-${document.numPages})`);
+  }
+
+  const page = await document.getPage(pageNumber);
+  const viewport = page.getViewport({ scale });
+  const canvas = createCanvas(viewport.width, viewport.height);
+  const context = canvas.getContext("2d");
+
+  const renderTask = page.render({
+    canvasContext: context,
+    viewport,
+  });
+  await renderTask.promise;
+
+  const pngBuffer = canvas.toBuffer("image/png");
+
+  await document.cleanup();
+  await document.destroy();
+
+  if (format === "png") {
+    // Thumbnail-sized preview — browsers can't render TIFF inline, so the
+    // sheet-list sidebar displays this while the actual .tif is generated
+    // on demand for export/download.
+    return sharp(pngBuffer).resize({ width: 240 }).png().toBuffer();
+  }
+
+  return sharp(pngBuffer).tiff({ compression: "lzw" }).toBuffer();
+}
+
+/**
  * Extract text items with (x, y) positions from the PDF's text layer using
  * pdfjs-dist's getTextContent(). Unlike extractPdfText() which returns a
  * flat string, this preserves the spatial position and font size of each

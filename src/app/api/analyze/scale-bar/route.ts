@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { decrypt } from "@/lib/encryption";
 import { renderPdfToImages } from "@/lib/pdf-utils";
 import { analyzeImage, type AIAssistConfig } from "@/lib/ai-assist";
 import type { Provider } from "@/lib/validators";
+import { requireOwnedExtraction } from "@/lib/api-auth";
 
 interface ScaleBarResult {
   found: boolean;
@@ -45,11 +45,6 @@ IMPORTANT:
 
 export async function POST(req: Request) {
   try {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     const body = await req.json();
     const { extractionId, pages } = body as {
       extractionId: string;
@@ -64,19 +59,12 @@ export async function POST(req: Request) {
     }
 
     // Load extraction with PDF data
-    const extraction = await prisma.extraction.findUnique({
-      where: { id: extractionId },
-      select: {
-        id: true,
-        userId: true,
-        pdfData: true,
-        pageCount: true,
-      },
+    const extractionResult = await requireOwnedExtraction(extractionId, {
+      pdfData: true,
+      pageCount: true,
     });
-
-    if (!extraction || extraction.userId !== session.user.id) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
-    }
+    if (!extractionResult.ok) return extractionResult.response;
+    const { record: extraction, session } = extractionResult;
 
     if (!extraction.pdfData) {
       return NextResponse.json(
@@ -128,7 +116,22 @@ export async function POST(req: Request) {
       );
     }
 
-    const config: AIAssistConfig = { provider, apiKey };
+    // Resolve model the same way /api/extract does: user preference → env
+    // (Anthropic only) → ai-assist's own default. Previously this was never
+    // set, so Auto-Scale silently ignored the user's configured model and
+    // always used ai-assist.ts's DEFAULT_MODELS fallback — if that fallback
+    // was invalid or inaccessible for the user's account, detection failed
+    // outright while regular extraction (which does resolve the model) kept
+    // working fine.
+    const modelMap: Record<Provider, string | null | undefined> = {
+      anthropic: user.claudeModel,
+      openai: user.openaiModel,
+      gemini: user.geminiModel,
+    };
+    const resolvedModel =
+      modelMap[provider] || (provider === "anthropic" ? process.env.CLAUDE_MODEL : undefined) || undefined;
+
+    const config: AIAssistConfig = { provider, apiKey, model: resolvedModel };
 
     // Determine which pages to search (default: 1-3, where scale bars usually live)
     const maxPage = extraction.pageCount || 10;

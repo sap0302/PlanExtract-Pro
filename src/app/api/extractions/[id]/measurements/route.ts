@@ -1,30 +1,19 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import {
   computePolylineLength,
   computePolygonArea,
 } from "@/lib/measurement-utils";
+import { requireOwnedExtraction } from "@/lib/api-auth";
 
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   const { id } = await params;
 
-  const extraction = await prisma.extraction.findUnique({
-    where: { id },
-    select: { userId: true },
-  });
-
-  if (!extraction || extraction.userId !== session.user.id) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  const result = await requireOwnedExtraction(id, {});
+  if (!result.ok) return result.response;
 
   const measurements = await prisma.measurement.findMany({
     where: { extractionId: id },
@@ -38,24 +27,17 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   const { id } = await params;
 
-  const extraction = await prisma.extraction.findUnique({
-    where: { id },
-    select: { userId: true, scalePixelsPerFoot: true },
+  const result = await requireOwnedExtraction(id, {
+    scalePixelsPerFoot: true,
+    scalePerPageJson: true,
   });
-
-  if (!extraction || extraction.userId !== session.user.id) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  if (!result.ok) return result.response;
+  const { record: extraction } = result;
 
   const body = await req.json();
-  const { type, points, page, label, color } = body;
+  const { type, points, page, label, color, shape } = body;
 
   if (!["linear", "area", "count"].includes(type)) {
     return NextResponse.json({ error: "Invalid measurement type" }, { status: 400 });
@@ -65,7 +47,20 @@ export async function POST(
     return NextResponse.json({ error: "Invalid measurement data" }, { status: 400 });
   }
 
-  const ppf = extraction.scalePixelsPerFoot;
+  // Per-page scale (set by calibrating a page without "Apply Scale to all
+  // pages") overrides the global scalePixelsPerFoot for that page — this
+  // route was written before that feature existed and always used the
+  // global value only, so a measurement drawn on a page with just a
+  // per-page override (and no global scale) silently saved as 0.00 FT.
+  let ppf = extraction.scalePixelsPerFoot;
+  if (extraction.scalePerPageJson) {
+    try {
+      const perPage = JSON.parse(extraction.scalePerPageJson) as Record<string, number>;
+      if (perPage[String(page)] != null) ppf = perPage[String(page)];
+    } catch {
+      // fall back to global ppf
+    }
+  }
   let valueFt: number | null = null;
   let valueCount: number | null = null;
 
@@ -86,6 +81,7 @@ export async function POST(
       valueFt,
       valueCount,
       color: color || "#FF0000",
+      shape: type === "count" ? shape || null : null,
       extractionId: id,
     },
   });

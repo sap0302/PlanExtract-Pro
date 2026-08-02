@@ -1,4 +1,4 @@
-import { PdfUpload } from "@/components/extraction/pdf-upload";
+import { ExtractionModeSelect } from "@/components/extraction/extraction-mode-select";
 
 export default function ExtractPage() {
   return (
@@ -9,7 +9,7 @@ export default function ExtractPage() {
           Upload a construction plan to extract a quantity takeoff
         </p>
       </div>
-      <PdfUpload />
+      <ExtractionModeSelect />
     </div>
   );
 }

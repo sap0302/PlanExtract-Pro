@@ -1,33 +1,21 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { requireOwnedExtraction } from "@/lib/api-auth";
 
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   const { id } = await params;
 
-  const original = await prisma.extraction.findUnique({
-    where: { id },
-    select: {
-      pdfData: true,
-      userId: true,
-      name: true,
-      fileName: true,
-      fileSize: true,
-      provider: true,
-    },
+  const result = await requireOwnedExtraction(id, {
+    pdfData: true,
+    name: true,
+    fileName: true,
+    fileSize: true,
+    provider: true,
   });
-
-  if (!original || original.userId !== session.user.id) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  if (!result.ok) return result.response;
+  const { record: original } = result;
 
   if (!original.pdfData) {
     return NextResponse.json(

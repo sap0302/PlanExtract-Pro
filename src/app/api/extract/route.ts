@@ -430,6 +430,7 @@ export async function POST(req: Request) {
 
         const pdfChunks = chunks.map((c) => c.buffer.toString("base64"));
         const chunkLabels = chunks.map((c) => c.label);
+        const chunkStartPages = chunks.map((c) => c.startPage);
 
         // ── Free the raw chunk sub-buffers ──
         // We've already converted each chunk's buffer to base64 above, so the
@@ -453,6 +454,7 @@ export async function POST(req: Request) {
           aiProvider,
           pdfChunks,
           chunkLabels,
+          chunkStartPages,
           async (chunkIndex, totalChunks, label) => {
             await prisma.extraction.update({
               where: { id: extraction.id },

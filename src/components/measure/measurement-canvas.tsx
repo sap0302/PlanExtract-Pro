@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useState, useEffect, useImperativeHandle, forwardRef } from "react";
-import { Stage, Layer, Line, Circle, Text, Rect, Group } from "react-konva";
+import { useCallback, useState, useEffect, useImperativeHandle, forwardRef, useRef } from "react";
+import { Stage, Layer, Line, Circle, Text, Rect, Group, RegularPolygon } from "react-konva";
 import type { KonvaEventObject } from "konva/lib/Node";
 import type { ToolMode } from "./measurement-toolbar";
 import type { Point } from "@/lib/measurement-utils";
@@ -22,6 +22,53 @@ export interface MeasurementShape {
   valueFt?: number | null;
   valueCount?: number | null;
   itemId?: string | null;
+  /** Count-tool marker shape, set via the "Properties - [New Count]" dialog. Defaults to "circle" when unset. */
+  shape?: "circle" | "square" | "triangle" | "cross" | null;
+}
+
+/** Renders a count marker in the shape chosen in the "Properties - [New Count]" dialog — defaults to a circle when unset (matches pre-shape-support markers). */
+function CountMarker({
+  shape,
+  x,
+  y,
+  color,
+}: {
+  shape: MeasurementShape["shape"];
+  x: number;
+  y: number;
+  color: string;
+}) {
+  switch (shape) {
+    case "square":
+      return (
+        <>
+          <Rect x={x - 9} y={y - 9} width={18} height={18} fill={color} opacity={0.8} cornerRadius={2} />
+          <Rect x={x - 2.5} y={y - 2.5} width={5} height={5} fill="white" />
+        </>
+      );
+    case "triangle":
+      return (
+        <>
+          <RegularPolygon x={x} y={y} sides={3} radius={12} fill={color} opacity={0.8} />
+          <Circle x={x} y={y + 1} radius={2.5} fill="white" />
+        </>
+      );
+    case "cross":
+      return (
+        <>
+          <Rect x={x - 9} y={y - 3} width={18} height={6} fill={color} opacity={0.8} cornerRadius={1} />
+          <Rect x={x - 3} y={y - 9} width={6} height={18} fill={color} opacity={0.8} cornerRadius={1} />
+        </>
+      );
+    case "circle":
+    default:
+      return (
+        <>
+          <Circle x={x} y={y} radius={10} fill={color} opacity={0.8} />
+          <Circle x={x} y={y} radius={3} fill="white" />
+        </>
+      );
+  }
 }
 
 export interface MeasurementCanvasHandle {
@@ -46,20 +93,15 @@ interface MeasurementCanvasProps {
     page: number
   ) => void;
   onCalibrationComplete: (points: [Point, Point]) => void;
+  onPanOffsetChange: (offset: { x: number; y: number }) => void;
+  /** Stroke color for the linear tool's in-progress preview and its completed measurements — set via the "Properties - [Linear]" dialog. */
+  linearColor?: string;
+  /** Stroke color for the area tool's in-progress preview — set via drag-and-drop-carried style or a future "Properties - [Area]" dialog. */
+  areaColor?: string;
   pixelsPerFoot: number | null;
   isSpaceDown: boolean;
-  // AI region highlights
-  highlights?: Array<{
-    bbox: [number, number, number, number];
-    label: string;
-    confidence: number;
-    page: number;
-  }>;
-  onHighlightClick?: (highlight: {
-    bbox: [number, number, number, number];
-    label: string;
-    page: number;
-  }) => void;
+  /** Reports the live cursor position in container-space pixels (same space as `width`/`height`) — null when the cursor leaves the canvas. Used by the parent to zoom-to-cursor from the ribbon buttons. */
+  onCursorMove?: (pos: Point | null) => void;
 }
 
 export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, MeasurementCanvasProps>(
@@ -76,15 +118,26 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
       onSelect,
       onMeasurementComplete,
       onCalibrationComplete,
+      onPanOffsetChange,
+      linearColor,
+      areaColor,
       pixelsPerFoot,
       isSpaceDown,
-      highlights,
-      onHighlightClick,
+      onCursorMove,
     },
     ref
   ) {
     const [activePoints, setActivePoints] = useState<Point[]>([]);
     const [cursorPos, setCursorPos] = useState<Point | null>(null);
+    // Raw screen-space (stage) cursor position — used to draw full-span
+    // horizontal/vertical guide lines that track the mouse across the canvas.
+    const [stagePos, setStagePos] = useState<Point | null>(null);
+    // Right-mouse-button panning — the overlay sits on top of the PDF
+    // viewer's own container and swallows mouse events whenever a drawing
+    // tool is active, so right-click pan has to be implemented here too.
+    const isPanningRight = useRef(false);
+    const panStart = useRef({ x: 0, y: 0 });
+    const [isPanningRightState, setIsPanningRightState] = useState(false);
 
     // Clear active points when tool changes
     useEffect(() => {
@@ -134,8 +187,9 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
 
     const handleClick = useCallback(
       (e: KonvaEventObject<MouseEvent>) => {
-        // Don't handle clicks when panning with space
-        if (isSpaceDown) return;
+        // Don't handle clicks when panning with space, or from the right/middle
+        // mouse button (used exclusively for panning).
+        if (isSpaceDown || e.evt.button !== 0) return;
 
         if (activeTool === "select") {
           onSelect(null);
@@ -151,8 +205,14 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
         if (activeTool === "calibrate") {
           const newPoints = [...activePoints, localPoint];
           if (newPoints.length >= 2) {
+            // Deliberately NOT cleared here — the line between the two
+            // clicked points should stay visible while the distance
+            // dialog/apply flow runs, not vanish the instant the second
+            // point is clicked. The parent clears it (via the imperative
+            // clearActivePoints ref) once calibration actually resolves —
+            // applied, cancelled, or failed.
             onCalibrationComplete([newPoints[0], newPoints[1]] as [Point, Point]);
-            setActivePoints([]);
+            setActivePoints(newPoints);
           } else {
             setActivePoints(newPoints);
           }
@@ -218,9 +278,57 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
         const pointer = stage.getPointerPosition();
         if (!pointer) return;
         setCursorPos(stageToLocal(pointer.x, pointer.y));
+        setStagePos({ x: pointer.x, y: pointer.y });
+        onCursorMove?.({ x: pointer.x, y: pointer.y });
+
+        if (isPanningRight.current) {
+          onPanOffsetChange({
+            x: e.evt.clientX - panStart.current.x,
+            y: e.evt.clientY - panStart.current.y,
+          });
+        }
       },
-      [stageToLocal]
+      [stageToLocal, onPanOffsetChange, onCursorMove]
     );
+
+    const handleMouseLeave = useCallback(() => {
+      setStagePos(null);
+      onCursorMove?.(null);
+    }, [onCursorMove]);
+
+    // Right (or middle) mouse button → pan, regardless of the active drawing
+    // tool. Left mouse button keeps doing whatever the active tool does.
+    const handleStageMouseDown = useCallback(
+      (e: KonvaEventObject<MouseEvent>) => {
+        if (e.evt.button === 2 || e.evt.button === 1) {
+          e.evt.preventDefault();
+          isPanningRight.current = true;
+          setIsPanningRightState(true);
+          panStart.current = {
+            x: e.evt.clientX - panOffset.x,
+            y: e.evt.clientY - panOffset.y,
+          };
+        }
+      },
+      [panOffset]
+    );
+
+    const handleStageMouseUp = useCallback(() => {
+      isPanningRight.current = false;
+      setIsPanningRightState(false);
+    }, []);
+
+    // Safety net: if the button is released outside the stage (fast drag),
+    // the Stage's own onMouseUp never fires — catch it on the window instead.
+    useEffect(() => {
+      if (!isPanningRightState) return;
+      const stop = () => {
+        isPanningRight.current = false;
+        setIsPanningRightState(false);
+      };
+      window.addEventListener("mouseup", stop);
+      return () => window.removeEventListener("mouseup", stop);
+    }, [isPanningRightState]);
 
     const flattenPoints = (points: Point[]): number[] =>
       points.flatMap((p) => {
@@ -259,13 +367,24 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
     };
 
     const pageMeasurements = measurements.filter((m) => m.page === currentPage);
-    const cursorStyle = isSpaceDown
-      ? "grab"
-      : activeTool === "select"
-      ? "default"
-      : "crosshair";
+    // Guide lines act as the crosshair reticle now, so hide the native cursor
+    // while measuring; still show a grab hand while panning (space, select
+    // tool, or an active right-mouse-button drag).
+    const cursorStyle =
+      isPanningRightState || isSpaceDown
+        ? "grabbing"
+        : activeTool === "select"
+        ? "default"
+        : "none";
 
-    const activeColor = activeTool === "calibrate" ? "#0088FF" : "#FF4444";
+    const activeColor =
+      activeTool === "calibrate"
+        ? "#0088FF"
+        : activeTool === "linear"
+        ? linearColor || "#FF4444"
+        : activeTool === "area"
+        ? areaColor || "#FF4444"
+        : "#FF4444";
 
     return (
       <Stage
@@ -273,53 +392,14 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
         height={height}
         onClick={handleClick}
         onDblClick={handleDblClick}
+        onMouseDown={handleStageMouseDown}
         onMouseMove={handleMouseMove}
+        onMouseUp={handleStageMouseUp}
+        onMouseLeave={handleMouseLeave}
+        onContextMenu={(e) => e.evt.preventDefault()}
         style={{ cursor: cursorStyle }}
       >
         <Layer>
-          {/* AI Region Highlights — rendered below measurements */}
-          {highlights?.map((h, i) => {
-            const topLeft = localToStage({ x: h.bbox[0], y: h.bbox[1] });
-            const bottomRight = localToStage({ x: h.bbox[2], y: h.bbox[3] });
-            const rectW = bottomRight.x - topLeft.x;
-            const rectH = bottomRight.y - topLeft.y;
-            return (
-              <Group key={`highlight-${i}`}>
-                <Rect
-                  x={topLeft.x}
-                  y={topLeft.y}
-                  width={rectW}
-                  height={rectH}
-                  fill="rgba(255, 200, 0, 0.12)"
-                  stroke="#FFB800"
-                  strokeWidth={2}
-                  dash={[8, 4]}
-                  cornerRadius={4}
-                  onClick={() => onHighlightClick?.(h)}
-                  onTap={() => onHighlightClick?.(h)}
-                />
-                {/* Label above the highlight */}
-                <Rect
-                  x={topLeft.x}
-                  y={topLeft.y - 18}
-                  width={Math.min(h.label.length * 6.5 + 12, rectW + 20)}
-                  height={16}
-                  fill="rgba(255, 184, 0, 0.9)"
-                  cornerRadius={3}
-                />
-                <Text
-                  x={topLeft.x + 6}
-                  y={topLeft.y - 16}
-                  text={h.label}
-                  fontSize={10}
-                  fill="#000"
-                  width={Math.min(h.label.length * 6.5 + 6, rectW + 14)}
-                  ellipsis
-                />
-              </Group>
-            );
-          })}
-
           {/* Existing measurements for current page */}
           {pageMeasurements.map((m) => {
             const isSelected = m.id === selectedId;
@@ -338,10 +418,6 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
                     lineCap="round"
                     lineJoin="round"
                   />
-                  {m.points.map((p, i) => {
-                    const s = localToStage(p);
-                    return <Circle key={i} x={s.x} y={s.y} radius={4} fill={m.color} />;
-                  })}
                   {/* Label with background */}
                   <Rect
                     x={midStage.x + 5}
@@ -384,8 +460,7 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
               const s = localToStage(m.points[0]);
               return (
                 <Group key={m.id} onClick={() => onSelect(m.id)}>
-                  <Circle x={s.x} y={s.y} radius={10} fill={m.color} opacity={0.8} />
-                  <Circle x={s.x} y={s.y} radius={3} fill="white" />
+                  <CountMarker shape={m.shape} x={s.x} y={s.y} color={m.color} />
                 </Group>
               );
             }
@@ -393,8 +468,24 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
             return null;
           })}
 
+          {/* Calibration line, held static once both points are placed — no
+              longer following the cursor like an in-progress draw, since
+              calibration is done at that point and just waiting on the
+              distance dialog/apply flow to resolve. */}
+          {activeTool === "calibrate" && activePoints.length >= 2 && (
+            <Line
+              points={flattenPoints([activePoints[0], activePoints[1]])}
+              stroke={activeColor}
+              strokeWidth={2}
+              lineCap="round"
+            />
+          )}
+
           {/* Active (in-progress) measurement */}
-          {activePoints.length > 0 && cursorPos && !isSpaceDown && (
+          {activePoints.length > 0 &&
+            cursorPos &&
+            !isSpaceDown &&
+            !(activeTool === "calibrate" && activePoints.length >= 2) && (
             <>
               <Line
                 points={flattenPoints(
@@ -407,10 +498,12 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
                 dash={[6, 3]}
                 lineCap="round"
               />
-              {activePoints.map((p, i) => {
-                const s = localToStage(p);
-                return <Circle key={i} x={s.x} y={s.y} radius={5} fill={activeColor} />;
-              })}
+              {/* Joint markers — kept for Area so the closing vertex is visible, omitted for Linear (clean stroke only, no dots). */}
+              {activeTool === "area" &&
+                activePoints.map((p, i) => {
+                  const s = localToStage(p);
+                  return <Circle key={i} x={s.x} y={s.y} radius={5} fill={activeColor} />;
+                })}
               {/* Close indicator for area */}
               {activeTool === "area" && activePoints.length >= 3 && (
                 <Circle
@@ -455,6 +548,19 @@ export const MeasurementCanvas = forwardRef<MeasurementCanvasHandle, Measurement
             })()
           )}
         </Layer>
+
+        {/* Crosshair guide lines — full-span horizontal/vertical lines that
+            track the mouse, rendered on their own layer so they stay above
+            everything without participating in hit-testing. A small gap is
+            left around the intersection to match the reference reticle. */}
+        {stagePos && !isSpaceDown && !isPanningRightState && (
+          <Layer listening={false}>
+            <Line points={[0, stagePos.y, stagePos.x - 8, stagePos.y]} stroke="black" strokeWidth={1.5} />
+            <Line points={[stagePos.x + 8, stagePos.y, width, stagePos.y]} stroke="black" strokeWidth={1.5} />
+            <Line points={[stagePos.x, 0, stagePos.x, stagePos.y - 8]} stroke="black" strokeWidth={1.5} />
+            <Line points={[stagePos.x, stagePos.y + 8, stagePos.x, height]} stroke="black" strokeWidth={1.5} />
+          </Layer>
+        )}
       </Stage>
     );
   }

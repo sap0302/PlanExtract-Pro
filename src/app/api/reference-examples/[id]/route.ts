@@ -1,56 +1,28 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { referenceExampleSchema } from "@/lib/validators";
+import { requireOwnedReferenceExample } from "@/lib/api-auth";
 
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   const { id } = await params;
 
-  const example = await prisma.referenceExample.findUnique({
-    where: { id },
-  });
+  const result = await requireOwnedReferenceExample(id);
+  if (!result.ok) return result.response;
 
-  if (!example) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-
-  if (example.userId !== session.user.id) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-
-  return NextResponse.json(example);
+  return NextResponse.json(result.record);
 }
 
 export async function PUT(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   const { id } = await params;
 
-  const example = await prisma.referenceExample.findUnique({
-    where: { id },
-  });
-
-  if (!example) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-
-  if (example.userId !== session.user.id) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const result = await requireOwnedReferenceExample(id);
+  if (!result.ok) return result.response;
 
   try {
     const body = await req.json();
@@ -77,24 +49,10 @@ export async function DELETE(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   const { id } = await params;
 
-  const example = await prisma.referenceExample.findUnique({
-    where: { id },
-  });
-
-  if (!example) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-
-  if (example.userId !== session.user.id) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const result = await requireOwnedReferenceExample(id);
+  if (!result.ok) return result.response;
 
   await prisma.referenceExample.delete({
     where: { id },
