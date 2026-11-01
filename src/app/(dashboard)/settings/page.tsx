@@ -1,4 +1,4 @@
-import { ApiKeySettings } from "@/components/settings/api-key-settings";
+import { ApiKeySettings } from "@/features/settings";
 
 export default function SettingsPage() {
   return (

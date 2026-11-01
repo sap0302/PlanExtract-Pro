@@ -1,0 +1,14 @@
+[
+  {
+    "name": "sample-subdivision",
+    "projectType": "mixed",
+    "rawText": "All Items (by Type, by Folder)\nType: Count\nFolder: Takeoff\nName Description Qty Units\n8\" GATE VALVE W 4.00 EA\nFIRE HYDRANT W 3.00 EA\n8X8 TEE W 2.00 EA\n1\" METER CAN ASSY W 6.00 EA\n6\" SEWER CLEANOUT WW 5.00 EA\n4X8 SEWER MANHOLE WW 2.00 EA\n5' CURB INLET SD 4.00 EA\n18\" HEADWALL SD 1.00 EA\nType: Linear\nFolder: Takeoff\nName Description Qty Units\n8\" DR18 W 842.50 FT\n6\" DR14 W 120.00 FT\n1\" POLY W 310.25 FT\n8\" SDR26 WW 655.00 FT\n18\" RCP SD 240.75 FT\n24\" RCP SD 96.00 FT\nType: Area\nFolder: Takeoff\nName Description Qty Units\nRIP RAP RIP RAP 85.00 SQ FT",
+    "isActive": true
+  },
+  {
+    "name": "sample-commercial-pad",
+    "projectType": "mixed",
+    "rawText": "All Items (by Type, by Folder)\nType: Count\nFolder: Takeoff\nName Description Qty Units\n12X6 TAPPING SLEEVE W 1.00 EA\n6\" GATE VALVE W 2.00 EA\n6\" FIRE RISER W 1.00 EA\n2\" METER CAN ASSY W 1.00 EA\n4\" SDR35 CLEANOUT WW 3.00 EA\n2X2 GRATE INLET SD 2.00 EA\n12\" HDPE 45 SD 4.00 EA\nDEMO WATER METER DEMO 1.00 EA\nType: Linear\nFolder: Takeoff\nName Description Qty Units\n6\" DR14 W 188.40 FT\n2\" POLY W 75.00 FT\n4\" SDR35 WW 142.60 FT\n12\" HDPE SD 318.90 FT\nDEMO WATER LINE DEMO 22.00 FT",
+    "isActive": true
+  }
+]

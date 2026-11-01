@@ -1,4 +1,4 @@
-import { ExtractionModeSelect } from "@/components/extraction/extraction-mode-select";
+import { ExtractionModeSelect } from "@/features/extraction";
 
 export default function ExtractPage() {
   return (

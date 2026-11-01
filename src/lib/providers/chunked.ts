@@ -1665,8 +1665,8 @@ export async function extractFromPDFChunked(
   // Each chunk holds the full base64 PDF (~28 MB) plus the AI request body
   // (~same) plus the response JSON plus intermediate state. Running 2 in
   // parallel on a 100+ MB civil plan OOMs V8's zone allocator before it
-  // even gets through splitting — observed repeatedly on Fairway Plaza
-  // (109 MB / 59 pages).
+  // even gets through splitting — observed repeatedly on a 109 MB / 59 page
+  // plan set.
   //
   // Set to 1 (sequential) to halve peak memory pressure. This trades a bit
   // of wall-clock time (chunks run back-to-back instead of 2 at a time) for

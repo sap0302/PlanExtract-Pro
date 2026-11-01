@@ -1,5 +1,6 @@
-// Imports reference examples from references.json into the current user's account
-// Run with: node import-references.js <admin-email>
+// Imports reference examples from a JSON file into a user's account.
+// Run with: node import-references.js <admin-email> [file]
+// Defaults to references.json; references.example.json ships with sample data.
 const { PrismaClient } = require("@prisma/client");
 const fs = require("fs");
 
@@ -7,14 +8,15 @@ const prisma = new PrismaClient();
 
 (async () => {
   const email = process.argv[2];
+  const file = process.argv[3] || "references.json";
   if (!email) {
-    console.error("Usage: node import-references.js <admin-email>");
-    console.error("Example: node import-references.js admin@example.com");
+    console.error("Usage: node import-references.js <admin-email> [file]");
+    console.error("Example: node import-references.js admin@example.com references.example.json");
     process.exit(1);
   }
 
-  if (!fs.existsSync("references.json")) {
-    console.error("references.json not found in current directory");
+  if (!fs.existsSync(file)) {
+    console.error(`${file} not found in current directory`);
     process.exit(1);
   }
 
@@ -27,7 +29,7 @@ const prisma = new PrismaClient();
     process.exit(1);
   }
 
-  const refs = JSON.parse(fs.readFileSync("references.json", "utf8"));
+  const refs = JSON.parse(fs.readFileSync(file, "utf8"));
   console.log(`Importing ${refs.length} reference examples for ${email}...`);
 
   let created = 0;

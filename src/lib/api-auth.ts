@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { Session } from "next-auth";
 import { Prisma } from "@prisma/client";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -35,8 +36,16 @@ import { prisma } from "@/lib/prisma";
  * `select` it passed in.
  */
 
-/** The session shape after the `session?.user?.id` null-check — `user.id` is narrowed to a plain `string` instead of `string | undefined`. */
-export type AuthedSession = NonNullable<Awaited<ReturnType<typeof auth>>> & {
+/**
+ * The session shape after the `session?.user?.id` null-check — `user.id` is
+ * narrowed to a plain `string` instead of `string | undefined`.
+ *
+ * Anchored to the augmented `Session` from src/types/next-auth.d.ts rather than
+ * `ReturnType<typeof auth>`: `auth` is overloaded, and `ReturnType` resolves to
+ * the wrong overload, which quietly reduced `user` to just `{ id: string }` and
+ * dropped `role` and `mustChangePassword`.
+ */
+export type AuthedSession = Session & {
   user: { id: string };
 };
 

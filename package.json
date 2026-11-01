@@ -4,10 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/dev-with-log.mjs",
-    "dev:raw": "next dev --webpack",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+    "dev:raw": "node ./node_modules/next/dist/bin/next dev --webpack",
+    "build": "node ./node_modules/next/dist/bin/next build",
+    "start": "node ./scripts/start-production.mjs",
+    "lint": "node ./node_modules/eslint/bin/eslint.js",
+    "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
@@ -30,6 +31,7 @@
     "next": "16.1.6",
     "next-auth": "^5.0.0-beta.30",
     "next-themes": "^0.4.6",
+    "nodemailer": "^7.0.13",
     "openai": "^6.27.0",
     "pdf-lib": "^1.17.1",
     "pdf-parse": "^2.4.5",
@@ -48,6 +50,7 @@
     "@tailwindcss/postcss": "^4",
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
+    "@types/nodemailer": "^7.0.12",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

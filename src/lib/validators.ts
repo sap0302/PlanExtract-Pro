@@ -14,6 +14,22 @@ export const loginSchema = z.object({
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 
+export const signupRequestSchema = z.object({
+  name: z.string().min(1, "Name is required").max(100, "Name too long"),
+  email: z.string().email("Invalid email address").max(200, "Email too long"),
+  password: z.string().min(8, "Password must be at least 8 characters").max(200, "Password too long"),
+  company: z.string().max(120, "Company name too long").optional(),
+  note: z.string().max(1000, "Message must be 1000 characters or fewer").optional(),
+});
+
+export const signupReviewSchema = z.object({
+  action: z.enum(["approve", "reject"]),
+  reviewNote: z.string().max(1000, "Note must be 1000 characters or fewer").optional(),
+});
+
+export type SignupRequestInput = z.infer<typeof signupRequestSchema>;
+export type SignupReviewInput = z.infer<typeof signupReviewSchema>;
+
 export const referenceExampleSchema = z.object({
   name: z.string().min(1, "Name is required").max(100, "Name too long"),
   projectType: z.enum(["water", "storm_drain", "wastewater", "mixed", "other"]),

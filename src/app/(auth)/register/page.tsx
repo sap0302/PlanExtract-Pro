@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { SignupRequestForm } from "@/features/auth";
 
 export default function RegisterPage() {
-  redirect("/login");
+  return <SignupRequestForm />;
 }

@@ -35,7 +35,8 @@ export async function POST(
   if (provider) formData.append("provider", provider);
 
   // Forward the request to the extract endpoint
-  const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
+  const baseUrl =
+    process.env.INTERNAL_APP_URL || process.env.NEXTAUTH_URL || "http://localhost:3000";
   const extractRes = await fetch(`${baseUrl}/api/extract`, {
     method: "POST",
     headers: {

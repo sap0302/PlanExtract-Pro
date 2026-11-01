@@ -1,0 +1,9 @@
+planextractpro.com, www.planextractpro.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:3000
+}
+
+admin.planextractpro.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:3100
+}

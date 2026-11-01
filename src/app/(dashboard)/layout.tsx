@@ -14,6 +14,9 @@ export default async function DashboardLayout({
   if (session.user.mustChangePassword) {
     redirect("/change-password");
   }
+  if (!session.user.emailConfirmed) {
+    redirect("/verify-email");
+  }
 
   return <DashboardShell>{children}</DashboardShell>;
 }

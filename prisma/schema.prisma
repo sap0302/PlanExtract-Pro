@@ -15,6 +15,10 @@ model User {
   passwordHash String
   role               String       @default("user") // "admin" | "user"
   mustChangePassword Boolean      @default(false)
+  // Null until the address is confirmed via an emailed link. Accounts approved
+  // from a SignupRequest start unverified; admin-created accounts do not, since
+  // an admin typed the address deliberately.
+  emailVerifiedAt    DateTime?
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
 
@@ -35,6 +39,47 @@ model User {
   extractions       Extraction[]
   referenceExamples ReferenceExample[]
   corrections       Correction[]
+  emailVerificationTokens EmailVerificationToken[]
+}
+
+// Single-use, expiring proof that someone can read a given inbox.
+// Only the SHA-256 of the token is stored, so a database leak can't be replayed
+// as a working verification link.
+model EmailVerificationToken {
+  id         String    @id @default(cuid())
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// Self-service access requests awaiting admin approval.
+// The chosen password is hashed at request time so approval can create the
+// User without ever storing or re-sending a plaintext password.
+model SignupRequest {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  company      String?
+  note         String?   // Applicant's message to the admin
+  status       String    @default("pending") // "pending" | "approved" | "rejected"
+
+  reviewedAt   DateTime?
+  reviewedById String?   // User.id of the reviewing admin, kept unlinked so deleting an admin never erases the audit trail
+  reviewNote   String?   // Admin's reason, shown only in the admin dashboard
+
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
 }
 
 model Extraction {

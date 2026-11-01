@@ -13,12 +13,9 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { InventoryTabs } from "@/components/inventory/inventory-tabs";
-import { ExportButtons } from "@/components/export/export-buttons";
-import { DeleteButton } from "@/components/extraction/delete-button";
-import { ReExtractButton } from "@/components/extraction/re-extract-button";
-import { FinalizeButton } from "@/components/extraction/finalize-button";
-import { CompletenessAudit } from "@/components/extraction/completeness-audit";
+import { InventoryTabs } from "@/features/inventory";
+import { ExportButtons } from "@/features/export";
+import { DeleteButton, ReExtractButton, FinalizeButton, CompletenessAudit } from "@/features/extraction";
 
 export default async function ExtractionDetailPage({
   params,

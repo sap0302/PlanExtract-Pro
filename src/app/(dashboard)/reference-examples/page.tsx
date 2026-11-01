@@ -1,6 +1,6 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { ExamplesList } from "@/components/reference-examples/examples-list";
+import { ExamplesList } from "@/features/reference-examples";
 
 export default async function ReferenceExamplesPage() {
   const session = await auth();

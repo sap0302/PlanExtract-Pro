@@ -6,6 +6,8 @@ declare module "next-auth" {
       id: string;
       role: string;
       mustChangePassword: boolean;
+      // Named to avoid colliding with NextAuth's own `emailVerified: Date | null`.
+      emailConfirmed: boolean;
     } & DefaultSession["user"];
   }
 }
