@@ -8,6 +8,34 @@ Production hosts:
 The two apps are separate Node processes. They do not share sessions. The
 admin app talks to the product app over HTTPS using `ADMIN_SERVICE_TOKEN`.
 
+## Updating the live server (current setup)
+
+The production VPS is Ubuntu 24.04 with Caddy in front of two systemd units,
+`planextract` (port 3000) and `planextract-admin` (port 3100), installed at
+`/opt/PlanExtract-Pro/PlanExtract-Pro`. To ship whatever is on `main`:
+
+```bash
+ssh root@<server-ip>
+bash /opt/PlanExtract-Pro/PlanExtract-Pro/deploy/bluehost/update.sh
+```
+
+The first run attaches the folder to the GitHub repo. Afterwards it is just
+"pull, build, restart". The script backs up the SQLite database to
+`/opt/backups` before it does anything and never touches `.env`, the database,
+`node_modules` or `.next`.
+
+If the server does not yet have `deploy/bluehost/update.sh`, bootstrap it once:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sap0302/PlanExtract-Pro/main/deploy/bluehost/update.sh | bash
+```
+
+Roll back by checking out an earlier commit and re-running the build steps,
+or by restoring a database file from `/opt/backups`.
+
+Secrets live in `.env`, `admin/.env` and `/etc/planextract/admin-hash.env`
+(the bcrypt hash sits in its own file so `$` is not expanded by dotenv).
+
 ## DNS
 
 In the Bluehost zone for `planextractpro.com`:
@@ -27,7 +55,9 @@ They will not run from a PHP document root on basic shared hosting.
 
 Use one of:
 
-1. **VPS / Cloud / Dedicated** — Apache reverse proxy (configs in this folder)
+1. **VPS / Cloud / Dedicated** — reverse proxy in front of two Node processes.
+   Production uses Caddy (see `../ultahost/Caddyfile`, it is the same on Linux);
+   Apache configs are in this folder if you prefer it.
 2. **cPanel "Setup Node.js App"** — two Node applications, Node 20 LTS
 
 ## 1. Product app (`planextractpro.com`)
